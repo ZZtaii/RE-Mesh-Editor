@@ -342,5 +342,23 @@ class ModFolderTests(unittest.TestCase):
         self.assertEqual(package.load_defaults(path), {})
 
 
+class BundleGuideTests(unittest.TestCase):
+    """The planner page copies CHARACTERS and the slot names; keep them in step."""
+
+    def setUp(self):
+        path = Path(__file__).resolve().parents[1] / 'docs/sf6-bundle-planner.html'
+        self.page = path.read_text(encoding='utf-8')
+
+    def test_planner_lists_every_character(self):
+        for identifier, name in package.CHARACTERS.items():
+            self.assertIn('"%s":"%s"' % (identifier, name), self.page,
+                          'docs/sf6-bundle-planner.html is missing esf%s (%s)' % (identifier, name))
+
+    def test_planner_uses_the_same_slot_names(self):
+        for slot in ('00', '01', '02'):
+            expected = package.SF6Asset('032', '001', slot).slot_name
+            self.assertIn('"%s":"%s"' % (slot, expected), self.page)
+
+
 if __name__ == '__main__':
     unittest.main()

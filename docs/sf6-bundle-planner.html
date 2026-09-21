@@ -1,0 +1,877 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Plan an SF6 Fluffy bundle, then follow the exact exporter fields, modinfo.ini and menu tree for each export.">
+<style>
+:root{color-scheme:dark; padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px)}
+body{margin:0; font-family:system-ui,-apple-system,"Segoe UI",sans-serif; font-size:14px}
+img{max-width:100%}
+[hidden]{display:none!important}
+</style>
+<title>SF6 Bundle Planner</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+:root{
+  /* Shared visual palette with SF6 Color Sync. */
+  --paper:#181b21; --surface:#252a33; --sunk:#1f232b; --raise:#2a303a;
+  --ink:#edf1f7; --ink2:#c7cfdb; --ink3:#aeb8c9;
+  --line:rgba(126,146,190,.18); --line2:rgba(126,146,190,.38);
+  --key:#7ea7ff; --key-soft:rgba(126,167,255,.12); --key-line:rgba(126,167,255,.4);
+  --accent-strong:#9c7cff;
+  --mesh:#69e0a5; --mesh-soft:rgba(105,224,165,.1);
+  --menu:#e1ad61; --menu-soft:rgba(225,173,97,.1);
+  --warn:#ef7474; --warn-soft:rgba(239,116,116,.1);
+  --shadow:0 14px 36px rgba(0,0,0,.18);
+  color-scheme:dark;
+}
+:root[data-theme="light"]{
+  --paper:#f3f5fa; --surface:#ffffff; --sunk:#edf0f7; --raise:#fafbfe;
+  --ink:#202735; --ink2:#445069; --ink3:#58657b;
+  --line:#d9dfec; --line2:#b7c3d9;
+  --key:#345cbb; --key-soft:#eaf0ff; --key-line:#a7bceb;
+  --accent-strong:#7752c7;
+  --mesh:#176942; --mesh-soft:#e8f5ee;
+  --menu:#805013; --menu-soft:#fff2df;
+  --warn:#af3030; --warn-soft:#fceaea;
+  --shadow:0 14px 36px rgba(35,47,74,.06);
+  color-scheme:light;
+}
+*{box-sizing:border-box}
+body{
+  margin:0; background:radial-gradient(ellipse at 70% -100px,rgba(126,167,255,.13),transparent 700px),var(--paper); color:var(--ink);
+  font-family:"Inter",system-ui,-apple-system,"Segoe UI",sans-serif; font-size:15px; line-height:1.5;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1120px; margin:0 auto; padding-inline:24px; padding-block:48px 64px}
+h1,h2,h3{text-wrap:balance; margin:0}
+h1{font-size:clamp(32px,5.2vw,58px); font-weight:700; letter-spacing:-.045em; line-height:1.1}
+h1 span{color:var(--key); background:linear-gradient(110deg,var(--key),var(--accent-strong)); background-clip:text; -webkit-background-clip:text; -webkit-text-fill-color:transparent}
+h2{font-size:clamp(19px,2.6vw,23px); font-weight:700; letter-spacing:-.014em}
+h3{font-size:16px; font-weight:600; letter-spacing:-.008em}
+p{margin:0}
+.prose{font-size:15.5px; line-height:1.7; color:var(--ink2); max-width:76ch}
+.eyebrow{font-size:11px; font-weight:600; letter-spacing:.13em; text-transform:uppercase; color:var(--ink3)}
+code,.mono{font-family:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace}
+
+/* ---------- header ---------- */
+header.top{display:flex; flex-direction:column; gap:18px; margin-bottom:28px}
+header .eyebrow{color:var(--key); margin-bottom:10px}
+a{color:var(--key); text-underline-offset:3px}
+.jumpnav{display:flex; flex-wrap:wrap; gap:10px; margin:2px 0 4px}
+.jumpnav a{display:flex; align-items:center; gap:8px; border:1px solid var(--line2); background:var(--key-soft); border-radius:10px; padding:8px 12px; font-size:13px; font-weight:600; text-decoration:none}
+.jumpnav a span{color:var(--ink3); font-family:ui-monospace,monospace}
+.jumpnav a:hover{border-color:var(--key)}
+section[id]{scroll-margin-top:20px}
+.finish{margin-top:40px; padding:24px}
+.finish ol{padding-left:24px; margin-bottom:0; color:var(--ink2)}
+.finish li{padding:5px 0 5px 4px}
+.finish strong{color:var(--ink)}
+.title-row{display:flex; flex-wrap:wrap; align-items:flex-end; gap:12px 18px; justify-content:space-between}
+.mocknote{
+  font-size:12px; color:var(--ink3); border:1px dashed var(--line2);
+  padding:5px 10px; border-radius:999px; white-space:nowrap;
+}
+.themebtn{
+  font:inherit; font-size:12px; font-weight:600; color:var(--ink2); background:var(--surface);
+  border:1px solid var(--line); border-radius:999px; padding:5px 12px; cursor:pointer;
+}
+.themebtn:hover{border-color:var(--line2); color:var(--ink)}
+
+/* ---------- panels ---------- */
+.panel{background:var(--surface); border:1px solid var(--line); border-radius:16px; box-shadow:var(--shadow); min-width:0}
+.panel-hd{
+  display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;
+  padding:13px 16px; border-bottom:1px solid var(--line);
+}
+.panel-bd{padding:20px}
+
+/* ---------- tabs ---------- */
+.tabs{display:flex; gap:6px; background:var(--sunk); padding:4px; border-radius:10px; border:1px solid var(--line)}
+.tab{
+  font:inherit; font-size:13.5px; font-weight:600; cursor:pointer; border:0; border-radius:7px;
+  padding:8px 14px; background:transparent; color:var(--ink2); flex:1; white-space:nowrap;
+}
+.tab[aria-selected="true"]{background:var(--key-soft); color:var(--key); box-shadow:inset 0 0 0 1px var(--key-line)}
+.tab:focus-visible,.themebtn:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible{
+  outline:2px solid var(--key); outline-offset:2px;
+}
+
+/* ---------- form controls ---------- */
+.grid{display:grid; gap:14px}
+.g2{grid-template-columns:repeat(auto-fit,minmax(210px,1fr))}
+.g3{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+label.fld{display:flex; flex-direction:column; gap:5px}
+label.fld > span{font-size:11.5px; font-weight:600; letter-spacing:.07em; text-transform:uppercase; color:var(--ink3)}
+input[type=text],select{
+  font:inherit; font-size:14px; color:var(--ink); background:var(--raise);
+  border:1px solid var(--line2); border-radius:7px; padding:8px 10px; width:100%; min-width:0;
+}
+input.mono{font-family:"JetBrains Mono",monospace; font-size:13px}
+label.fld > span.hint,.hint{font-size:12px; font-weight:400; letter-spacing:0; text-transform:none; color:var(--ink3)}
+
+.varlist{display:flex; flex-direction:column; gap:8px}
+.varrow{display:flex; gap:8px; align-items:center}
+.varrow .idx{
+  font-family:"JetBrains Mono",monospace; font-size:11px; color:var(--ink3);
+  width:20px; text-align:right; flex:none;
+}
+.iconbtn{
+  font:inherit; font-size:15px; line-height:1; color:var(--ink3); background:transparent;
+  border:1px solid var(--line); border-radius:7px; padding:7px 10px; cursor:pointer; flex:none;
+}
+.iconbtn:hover{color:var(--warn); border-color:var(--warn)}
+.addbtn{
+  font:inherit; font-size:13px; font-weight:600; color:var(--key); background:var(--key-soft);
+  border:1px solid var(--key-line); border-radius:7px; padding:7px 12px; cursor:pointer;
+}
+.addbtn:hover{filter:brightness(.97)}
+.groupbox{border:1px solid var(--line); border-radius:10px; padding:14px; background:var(--sunk)}
+.groupbox + .groupbox{margin-top:12px}
+.groupbox-hd{display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:12px}
+
+/* ---------- warnings ---------- */
+.warns{display:flex; flex-direction:column; gap:8px; margin-top:16px}
+.warn{
+  display:flex; gap:9px; align-items:flex-start; font-size:13.5px; color:var(--warn);
+  background:var(--warn-soft); border:1px solid currentColor; border-radius:8px; padding:9px 12px;
+}
+.warn b{font-weight:600}
+
+/* ---------- summary table ---------- */
+.tablewrap{overflow-x:auto; margin:0 -16px; padding:0 16px}
+table{border-collapse:collapse; width:100%; font-size:13px; min-width:580px}
+th{
+  text-align:left; font-size:10.5px; font-weight:600; letter-spacing:.09em; text-transform:uppercase;
+  color:var(--ink3); padding:0 12px 8px 0; border-bottom:1px solid var(--line); white-space:nowrap;
+}
+td{padding:9px 12px 9px 0; border-bottom:1px solid var(--line); vertical-align:top}
+tr:last-child td{border-bottom:0}
+td.num{font-family:"JetBrains Mono",monospace; color:var(--ink3); font-variant-numeric:tabular-nums}
+td .mono{font-size:12.5px}
+.dash{color:var(--ink3)}
+
+/* ---------- chips ---------- */
+.chip{
+  display:inline-flex; align-items:center; gap:5px; font-size:11px; font-weight:600;
+  letter-spacing:.04em; padding:3px 8px; border-radius:999px; border:1px solid currentColor; white-space:nowrap;
+}
+.chip.mesh{color:var(--mesh); background:var(--mesh-soft)}
+.chip.menu{color:var(--menu); background:var(--menu-soft)}
+.chip.key{color:var(--key); background:var(--key-soft)}
+
+/* ---------- export cards ---------- */
+.steps{display:flex; flex-direction:column; gap:20px; margin-top:20px}
+.step-hd{display:flex; align-items:baseline; gap:10px; flex-wrap:wrap}
+.step-n{
+  font-family:"JetBrains Mono",monospace; font-size:12px; font-weight:600; color:var(--ink3);
+  font-variant-numeric:tabular-nums;
+}
+.step-why{font-size:14.5px; line-height:1.6; color:var(--ink2); margin-top:4px; max-width:72ch}
+.changes{display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin:14px 0 0}
+.changes .lbl{font-size:11.5px; font-weight:600; letter-spacing:.07em; text-transform:uppercase; color:var(--ink3)}
+
+/* dialog replica */
+.dlg{border:1px solid var(--line); border-radius:10px; overflow:hidden; background:var(--sunk); margin-top:14px}
+.dlg-hd{
+  display:flex; align-items:center; justify-content:space-between; gap:10px;
+  padding:9px 13px; background:var(--raise); border-bottom:1px solid var(--line);
+  font-size:12px; font-weight:600; color:var(--ink2);
+}
+.dlg-bd{padding:12px 13px; display:flex; flex-direction:column; gap:2px}
+.row{display:grid; grid-template-columns:minmax(120px,168px) 1fr; gap:10px; align-items:start; padding:5px 0}
+.row > .k{
+  font-size:12.5px; font-weight:600; color:var(--ink2); text-align:right; padding-top:8px; line-height:1.25;
+}
+.row > .v{min-width:0}
+.box{
+  font-family:"JetBrains Mono",monospace; font-size:13px; color:var(--ink); background:var(--raise);
+  border:1px solid var(--line2); border-radius:6px; padding:7px 10px; word-break:break-word;
+}
+.box.empty{color:var(--ink3); font-style:italic; font-family:inherit; font-size:13px}
+.row.chg > .v > .box{border-color:var(--key-line); background:var(--key-soft); border-width:1.5px}
+.row.same > .v > .box{color:var(--ink2)}
+.sub{font-size:11.5px; color:var(--ink3); margin-top:4px; display:block}
+.sub.keep{color:var(--key); font-weight:600}
+.dlg-sep{height:1px; background:var(--line); margin:9px 0}
+.dlg-ft{padding:11px 13px 13px}
+.fakebtn{
+  display:block; width:100%; text-align:center; font-size:13.5px; font-weight:600;
+  color:#181b21; background:var(--key); border-radius:7px; padding:10px;
+}
+:root[data-theme="light"] .fakebtn{color:#fff}
+
+/* two-column result area */
+.after{display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,272px),1fr)); gap:14px; margin-top:14px}
+.mini{border:1px solid var(--line); border-radius:10px; background:var(--sunk); overflow:hidden}
+.mini-hd{
+  display:flex; align-items:center; justify-content:space-between; gap:8px;
+  padding:8px 12px; border-bottom:1px solid var(--line);
+  font-size:11px; font-weight:600; letter-spacing:.08em; text-transform:uppercase; color:var(--ink3);
+}
+.mini-bd{padding:11px 12px}
+pre{
+  margin:0; font-family:"JetBrains Mono",monospace; font-size:12.5px; line-height:1.65;
+  color:var(--ink); overflow-x:auto; white-space:pre;
+}
+pre .k{color:var(--ink3)}
+.copy{
+  font:inherit; font-size:11px; font-weight:600; letter-spacing:.04em; text-transform:uppercase;
+  color:var(--ink3); background:transparent; border:1px solid var(--line2); border-radius:5px;
+  padding:3px 8px; cursor:pointer;
+}
+.copy:hover{color:var(--key); border-color:var(--key)}
+.copy.done{color:var(--mesh); border-color:var(--mesh)}
+
+/* fluffy tree */
+.tree{display:flex; flex-direction:column; gap:3px}
+.tnode{display:flex; flex-wrap:wrap; align-items:center; gap:8px; font-size:13.5px; padding:5px 8px; border-radius:6px; overflow-wrap:anywhere}
+.tnode .glyph{font-family:"JetBrains Mono",monospace; font-size:11px; color:var(--ink3); flex:none}
+.tnode.menu{background:var(--menu-soft); color:var(--menu); font-weight:600}
+.tnode.bundle{background:var(--menu-soft); color:var(--menu); font-weight:600}
+.tnode.opt{background:var(--mesh-soft); color:var(--mesh); font-weight:600}
+.tnode.root{color:var(--ink3); font-weight:600; font-size:11.5px; letter-spacing:.08em; text-transform:uppercase; padding-left:0}
+.tnode .tail{margin-left:auto; font-size:10.5px; font-weight:600; letter-spacing:.05em; opacity:.75; text-transform:uppercase}
+.tnode.new{outline:1.5px solid currentColor; outline-offset:-1.5px}
+
+/* ---------- reference ---------- */
+.ref{margin-top:52px; display:flex; flex-direction:column; gap:22px}
+.deflist{display:grid; gap:0}
+.defrow{display:grid; grid-template-columns:minmax(120px,190px) 1fr; gap:6px 18px; padding:12px 0; border-bottom:1px solid var(--line)}
+.defrow:last-child{border-bottom:0}
+.defrow .dt{font-size:13.5px; font-weight:600}
+.defrow .dd{font-size:14px; color:var(--ink2)}
+.defrow .dd em{font-family:"JetBrains Mono",monospace; font-style:normal; font-size:12.5px; color:var(--ink)}
+.rules{display:grid; gap:10px; grid-template-columns:repeat(auto-fit,minmax(248px,1fr))}
+.rule{border:1px solid var(--line); border-left:3px solid var(--key); border-radius:8px; padding:12px 14px; background:var(--surface)}
+.rule h3{margin-bottom:4px}
+.rule p{font-size:13.5px; color:var(--ink2)}
+.errs{display:flex; flex-direction:column; gap:10px}
+.err{display:grid; grid-template-columns:1fr; gap:5px; border:1px solid var(--line); border-radius:8px; padding:12px 14px; background:var(--surface)}
+.err .msg{font-family:"JetBrains Mono",monospace; font-size:12.5px; color:var(--warn)}
+.err .fix{font-size:13.5px; color:var(--ink2)}
+footer{margin-top:44px; padding-top:18px; border-top:1px solid var(--line); font-size:12.5px; color:var(--ink3)}
+
+@media (max-width:560px){
+  .wrap{padding:28px 14px 40px}
+  .panel-bd,.finish{padding:14px}
+  .tabs{width:100%}
+  .tab{white-space:normal; padding:8px}
+  .g2,.g3,.rules{grid-template-columns:1fr}
+  .row{grid-template-columns:1fr; gap:4px}
+  .row > .k{text-align:left; padding-top:0}
+  .defrow{grid-template-columns:1fr}
+}
+@media (prefers-reduced-motion:reduce){*{animation:none!important; transition:none!important}}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header class="top">
+    <div class="title-row">
+      <div>
+        <div class="eyebrow">RE Mesh Editor &middot; Street Fighter 6</div>
+        <h1>SF6 <span>Bundle Planner</span></h1>
+      </div>
+      <div style="display:flex; gap:8px; align-items:center">
+        <button class="themebtn" id="themebtn" type="button">Light theme</button>
+      </div>
+    </div>
+    <p class="prose">Name your variants below. The planner works out how many times you export, what to type in each dialog, and an example Fluffy menu. Nothing here touches your files &mdash; prepare each edited mesh in Blender first. The dialogs and menus are mock figures, not a live Fluffy preview.</p>
+    <nav class="jumpnav" aria-label="Planner sections">
+      <a href="#plan"><span>01</span> Choose a layout</a>
+      <a href="#exports"><span>02</span> Follow the exports</a>
+      <a href="#finish"><span>03</span> Finish in Fluffy</a>
+    </nav>
+  </header>
+
+  <section class="panel" id="plan" aria-label="Plan your bundle">
+    <div class="panel-hd">
+      <div class="tabs" role="tablist" aria-label="Structure">
+        <button class="tab" type="button" role="tab" id="tab-bundle" aria-selected="true">One flat bundle</button>
+        <button class="tab" type="button" role="tab" id="tab-nested" aria-selected="false">Menus inside menus</button>
+      </div>
+      <span class="mocknote" id="planhint">2 exports</span>
+    </div>
+    <div class="panel-bd">
+      <p class="prose" style="margin-bottom:20px">Use <b>One flat bundle</b> for a single list, like Braid / Bangs. Use <b>Menus inside menus</b> for a pack with separate Hair and Outfit groups.</p>
+      <div class="grid g3" style="margin-bottom:16px">
+        <label class="fld"><span>Character</span><select id="character"></select></label>
+        <label class="fld"><span>Costume</span><select id="costume"></select></label>
+        <label class="fld"><span>Author</span><input type="text" id="author" placeholder="your name"></label>
+      </div>
+      <label class="fld" style="margin-bottom:16px">
+        <span>Mods folder</span>
+        <input type="text" class="mono" id="modspath">
+        <span class="hint">Your Fluffy Mod Manager <code>Games\SF6\Mods</code> directory. Every export goes straight into it.</span>
+      </label>
+
+      <div id="bundle-inputs">
+        <div class="grid g2" style="margin-bottom:14px">
+          <label class="fld"><span>Bundle name</span><input type="text" id="bundlename">
+            <span class="hint">The one heading Fluffy groups your variants under.</span></label>
+          <label class="fld"><span>Which mesh</span><select id="bundleslot"></select>
+            <span class="hint">Pick the part you edited in Blender.</span></label>
+        </div>
+        <div class="fld">
+          <span style="font-size:11.5px; font-weight:600; letter-spacing:.07em; text-transform:uppercase; color:var(--ink3); margin-bottom:5px; display:block">Variants</span>
+          <div class="varlist" id="bundlevars"></div>
+          <div style="margin-top:9px"><button class="addbtn" type="button" id="addbundlevar">+ Add variant</button></div>
+        </div>
+      </div>
+
+      <div id="nested-inputs" hidden>
+        <label class="fld" style="margin-bottom:14px">
+          <span>Main menu name</span><input type="text" id="packname">
+          <span class="hint">The top entry in Fluffy. Opening it shows the groups below.</span>
+        </label>
+        <div id="groups"></div>
+        <div style="margin-top:12px"><button class="addbtn" type="button" id="addgroup">+ Add a group</button></div>
+      </div>
+
+      <p class="hint">Changing character or costume updates paths and categories. Your custom menu and variant names stay as you typed them.</p>
+      <div class="warns" id="warns" role="status" aria-live="polite"></div>
+    </div>
+  </section>
+
+  <section id="exports" style="margin-top:32px" aria-label="Your exports">
+    <h2>Your exports</h2>
+    <p class="prose" style="margin-top:6px">Do them in this order. The dialog remembers what you typed last time, so after the first export you only change the highlighted fields.</p>
+    <div class="panel" style="margin-top:14px">
+      <div class="panel-bd">
+        <div class="tablewrap">
+          <table id="summary">
+            <thead><tr><th>#</th><th>Mode</th><th>Mod Folder Name</th><th>Display Name</th><th>Bundle Name</th><th>Parent Mod</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+    <div class="steps" id="steps"></div>
+  </section>
+
+  <section class="panel finish" id="finish" aria-label="Finish in Blender and Fluffy">
+    <h2>Finish in Blender &amp; Fluffy</h2>
+    <ol>
+      <li><strong>Follow each export card in Blender.</strong> Open File &rarr; Export &rarr; RE Mesh Editor &rarr; SF6 Fluffy Mod Folder. Select the correct edited mesh for each Mesh Mod. Menu Only entries need no mesh.</li>
+      <li><strong>Add any other assets your mod needs.</strong> Folder export writes the mesh and metadata. Export textures, MDF materials and chain files separately into their native paths when needed. Keep all option folders side by side.</li>
+      <li><strong>Refresh Fluffy, then enable the option you want.</strong> Check it in game. These grouping fields do not enforce mutually exclusive choices; enable one hairstyle at a time when both replace the same hair mesh.</li>
+    </ol>
+    <p class="hint" style="margin-top:16px">Copy buttons copy example text only. Nothing on this page exports a mesh or installs a mod.</p>
+  </section>
+
+  <section style="margin-top:44px" aria-label="Result">
+    <h2>When every export is done</h2>
+    <div class="after" style="margin-top:14px">
+      <div class="mini">
+        <div class="mini-hd"><span>Fluffy menu</span></div>
+        <div class="mini-bd"><div class="tree" id="finaltree"></div></div>
+      </div>
+      <div class="mini">
+        <div class="mini-hd"><span>Folders on your drive</span><button class="copy" type="button" data-copy="finaldisk">Copy</button></div>
+        <div class="mini-bd"><pre id="finaldisk"></pre></div>
+      </div>
+    </div>
+    <p class="prose" style="margin-top:14px">Every folder sits side by side in your Mods directory. You never drag one folder inside another &mdash; the menu links live in the <code>modinfo.ini</code> files. If Fluffy was already open, refresh its mod list.</p>
+  </section>
+
+  <section class="ref" aria-label="Reference">
+    <div>
+      <h2>The four names people mix up</h2>
+      <div class="deflist" style="margin-top:10px">
+        <div class="defrow"><div class="dt">Mod Folder Name</div><div class="dd">The folder on your drive. A new variant needs a new folder name; reusing one updates that export instead. Example <em>11 Ingrid C1 Braid</em>.</div></div>
+        <div class="defrow"><div class="dt">Display Name</div><div class="dd">What you read in Fluffy. Written as <em>name=</em>. Example <em>Braid</em>.</div></div>
+        <div class="defrow"><div class="dt">Bundle Name</div><div class="dd">Groups separate mods under one heading. Written as <em>nameasbundle=</em>. Same text on every variant, or they will not group.</div></div>
+        <div class="defrow"><div class="dt">Parent Mod</div><div class="dd">The menu this entry goes inside. Written as <em>addonfor=</em>. It must match the parent's <b>Display Name</b> exactly &mdash; it is not a folder path.</div></div>
+      </div>
+    </div>
+
+    <div>
+      <h2>Worth knowing</h2>
+      <div class="rules" style="margin-top:12px">
+        <div class="rule"><h3>The mesh decides the game path</h3><p>The collection you pick supplies the character, costume and slot. Calling a folder &ldquo;C2&rdquo; will not turn a C1 mesh into costume 2.</p></div>
+        <div class="rule"><h3>Slots are 00 Head, 01 Body, 02 Hair</h3><p>Costume folders keep three digits: <code>001</code>, not <code>01</code>.</p></div>
+        <div class="rule"><h3>Menu Only needs its Category typed</h3><p>There is no mesh to read it from, so the exporter writes whatever is in the Category field &mdash; usually still there from your last export.</p></div>
+        <div class="rule"><h3>Create Parent Menu is a shortcut</h3><p>Following this plan you never need it: each menu is made before anything points at it. Turn it on only when you name a Parent Mod that does not exist yet.</p></div>
+        <div class="rule"><h3>Descriptions break lines with \n</h3><p>A literal backslash-n, not a slash. Each menu and option can also carry its own preview image.</p></div>
+        <div class="rule"><h3>Extra categories use semicolons</h3><p><code>Hair; Colours</code> becomes one category line each, on top of the character category.</p></div>
+      </div>
+    </div>
+
+    <div>
+      <h2>If the exporter refuses</h2>
+      <div class="errs" style="margin-top:12px">
+        <div class="err"><div class="msg">An add-on option must have a different display name from its parent mod.</div><div class="fix">Your Display Name and Parent Mod are the same text. Rename one of them.</div></div>
+        <div class="err"><div class="msg">The parent folder already belongs to a different mod.</div><div class="fix">Create Parent Menu found a folder that is not a matching menu. Point Parent Menu Folder somewhere new.</div></div>
+        <div class="err"><div class="msg">This folder belongs to a mesh mod. Choose a separate folder for the dummy menu.</div><div class="fix">A menu cannot reuse a mesh mod's folder. Give the menu its own.</div></div>
+        <div class="err"><div class="msg">The selected collection has no recognizable SF6 mesh filename.</div><div class="fix">The collection was not imported from an <code>esfNNN_CCC_SS.mesh</code> file. Re-import the original mesh and edit that.</div></div>
+        <div class="err"><div class="msg">Enter a folder name without leading/trailing spaces or a trailing dot.</div><div class="fix">Trim the Mod Folder Name. It also cannot contain <code>\ / : * ? " &lt; &gt; |</code>.</div></div>
+      </div>
+    </div>
+  </section>
+
+  <footer>Built for the <a href="https://github.com/ZZtaii/RE-Mesh-Editor">SF6 fork of RE Mesh Editor</a>. Visual palette shared with <a href="https://colorsync-sf6.pages.dev/">SF6 Color Sync</a>.<br>Field names and example <code>modinfo.ini</code> output follow the folder exporter. Your plan is remembered in this browser.</footer>
+</div>
+
+<script>
+(function(){
+"use strict";
+
+var CHARACTERS = {
+  "001":"Ryu","002":"Luke","003":"Kimberly","004":"Chun-Li","005":"Manon","006":"Zangief",
+  "007":"JP","008":"Dhalsim","009":"Cammy","010":"Ken","011":"Dee Jay","012":"Lily",
+  "013":"A.K.I","014":"Rashid","015":"Blanka","016":"Juri","017":"Marisa","018":"Guile",
+  "019":"Ed","020":"E. Honda","021":"Jamie","022":"Akuma","025":"Sagat","026":"M. Bison",
+  "027":"Terry","028":"Mai","029":"Elena","030":"C.Viper","031":"Alex","032":"Ingrid","033":"Yasmine"
+};
+var SLOTS = {"00":"Head","01":"Body","02":"Hair"};
+var STORE = "sf6-bundle-planner-v1";
+
+var state = {
+  mode:"bundle",
+  character:"032",
+  costume:"001",
+  author:"",
+  modspath:"D:\\Fluffy\\Games\\SF6\\Mods",
+  bundleName:"Ingrid C1 Hair Collection",
+  bundleSlot:"02",
+  bundleVars:["Braid","Bangs"],
+  packName:"Ingrid C1 Style Pack",
+  groups:[
+    {name:"Ingrid C1 Hair Options", slot:"02", vars:["Braid","Bangs"]},
+    {name:"Ingrid C1 Collar Options", slot:"01", vars:["Open Collar","Closed Collar"]}
+  ]
+};
+
+try{
+  var saved = localStorage.getItem(STORE);
+  if(saved){ var o = JSON.parse(saved); if(o && typeof o === "object"){ for(var k in state){ if(o[k] !== undefined) state[k] = o[k]; } } }
+}catch(e){}
+
+if(["001","002","003"].indexOf(state.costume) < 0) state.costume = "001";
+
+function save(){ try{ localStorage.setItem(STORE, JSON.stringify(state)); }catch(e){} }
+
+function esc(s){ return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+function charName(){ return CHARACTERS[state.character] || ("esf" + state.character); }
+function cLabel(){ return "C" + parseInt(state.costume,10); }
+function meshFile(slot){ return "esf" + state.character + "_" + state.costume + "_" + slot + ".mesh"; }
+function gamePath(slot){
+  return ["natives","stm","product","model","esf","esf"+state.character,state.costume,slot,meshFile(slot)+".230110883"].join("\\");
+}
+function category(){ return "!Characters > " + charName(); }
+
+/* ---------- build the export plan ---------- */
+function buildPlan(){
+  var out = [], i;
+  if(state.mode === "bundle"){
+    for(i=0;i<state.bundleVars.length;i++){
+      var v = state.bundleVars[i] || "";
+      out.push({
+        kind:"mesh", slot:state.bundleSlot, title:v || ("Variant " + (i+1)),
+        folder: (charName() + " " + cLabel() + " " + v).trim(),
+        display: v, bundle: state.bundleName, parent:"",
+        why: i === 0
+          ? "The first variant creates the bundle. Bundle Name is the only field that ties the variants together."
+          : "Same Bundle Name, new folder and new Display Name. That is the whole trick."
+      });
+    }
+  } else {
+    out.push({
+      kind:"menu", slot:"", title:"Main menu",
+      folder: "00 " + charName() + " " + cLabel() + " Pack",
+      display: state.packName, bundle:"", parent:"",
+      why:"Menu Only makes an entry that opens instead of installing. Nothing exists to point at yet, so Parent Mod stays empty."
+    });
+    for(var g=0; g<state.groups.length; g++){
+      var grp = state.groups[g];
+      out.push({
+        kind:"menu", slot:"", title:(grp.name || ("Group " + (g+1))) + " menu",
+        folder: "0" + (g+1) + " " + (grp.name || ("Group " + (g+1))),
+        display: grp.name, bundle:"", parent: state.packName,
+        why:"Still Menu Only. Parent Mod is the main menu's Display Name, letter for letter, so this menu sits inside it."
+      });
+      for(i=0;i<grp.vars.length;i++){
+        var vv = grp.vars[i] || "";
+        out.push({
+          kind:"mesh", slot:grp.slot, title:vv || ("Variant " + (i+1)),
+          folder: (g+1) + "" + (i+1) + " " + charName() + " " + cLabel() + " " + vv,
+          display: vv, bundle:"", parent: grp.name,
+          why: i === 0
+            ? "Back to Mesh Mod. Select this mesh in Blender first, then point Parent Mod at the menu you just made."
+            : "Only the folder and Display Name change. Parent Mod stays on the same menu, so both land side by side."
+        });
+      }
+    }
+  }
+  for(i=0;i<out.length;i++){
+    out[i].n = i+1; out[i].total = out.length;
+    // The exporter trims these INI fields before matching parent names.
+    out[i].display = out[i].display.trim();
+    out[i].bundle = out[i].bundle.trim();
+    out[i].parent = out[i].parent.trim();
+  }
+  return out;
+}
+
+/* ---------- modinfo.ini for the fields in this example ---------- */
+function modinfo(step){
+  var lines = [];
+  lines.push(["name", step.display]);
+  lines.push(["version","v1"]);
+  if(state.author.trim()) lines.push(["author", state.author.trim()]);
+  lines.push(["category", category()]);
+  if(step.bundle) lines.push(["nameasbundle", step.bundle]);
+  if(step.parent) lines.push(["addonfor", step.parent]);
+  if(step.kind === "menu") lines.push(["dummymod","True"]);
+  return lines;
+}
+
+/* ---------- Fluffy tree ---------- */
+function treeAfter(plan, upto){
+  var byKey = Object.create(null);
+  function node(key, kind){
+    if(byKey[key]) return byKey[key];
+    var nd = {key:key, kind:kind, kids:[], isNew:false};
+    byKey[key] = nd; return nd;
+  }
+  var roots = [];
+  for(var i=0;i<=upto && i<plan.length;i++){
+    var s = plan[i];
+    var self = node(s.display, s.kind === "menu" ? "menu" : "opt");
+    self.kind = s.kind === "menu" ? "menu" : "opt";
+    self.isNew = (i === upto);
+    var parentKey = s.bundle || s.parent || "";
+    if(parentKey){
+      var p = node(parentKey, s.bundle ? "bundle" : "menu");
+      if(p.kids.indexOf(self) < 0) p.kids.push(self);
+      if(roots.indexOf(p) < 0 && !p.attached) roots.push(p);
+      self.attached = true;
+      var ri = roots.indexOf(self); if(ri >= 0) roots.splice(ri,1);
+    } else if(roots.indexOf(self) < 0 && !self.attached){
+      roots.push(self);
+    }
+  }
+  return roots;
+}
+
+function renderTree(roots, showNew){
+  var html = '<div class="tnode root"><span>Mods</span></div>';
+  function walk(list, depth, ancestors){
+    for(var i=0;i<list.length;i++){
+      var nd = list[i];
+      // Invalid duplicate names can form a cycle while the user is typing.
+      if(ancestors.indexOf(nd) >= 0) continue;
+      var cls = "tnode " + nd.kind + (showNew && nd.isNew ? " new" : "");
+      var tail = nd.kind === "opt" ? "Mod option" : (nd.kind === "bundle" ? "Bundle" : "Menu");
+      html += '<div class="' + cls + '" style="margin-left:' + (depth*16) + 'px">' +
+        '<span class="glyph">' + (i === list.length-1 ? "&#9492;" : "&#9500;") + '</span>' +
+        '<span>' + esc(nd.key || "(unnamed)") + '</span>' +
+        '<span class="tail">' + tail + '</span></div>';
+      if(nd.kids.length) walk(nd.kids, depth+1, ancestors.concat([nd]));
+    }
+  }
+  walk(roots, 0, []);
+  return html;
+}
+
+/* ---------- dialog replica ---------- */
+function fieldRows(step, prev){
+  var rows = [];
+  rows.push({k:"Export Content", v:(step.kind === "mesh" ? "Mesh Mod" : "Menu Only"), id:"mode"});
+  if(step.kind === "mesh"){
+    rows.push({k:"Mesh Collection", v:meshFile(step.slot), id:"coll",
+      sub: charName() + " &middot; " + cLabel() + " &middot; " + (SLOTS[step.slot]||step.slot) + " (" + step.slot + ")"});
+  }
+  rows.push({k:"Parent Directory", v:state.modspath, id:"dir"});
+  rows.push({k:"Mod Folder Name", v:step.folder, id:"folder", sub:"Folder created on your drive"});
+  rows.push({k:"sep"});
+  rows.push({k:"Display Name", v:step.display, id:"display", sub:"Shown in Fluffy"});
+  rows.push({k:"Category", v:category(), id:"cat",
+    sub: step.kind === "menu" ? "Type it &mdash; a menu has no mesh to read it from" : "Filled in from the mesh"});
+  rows.push({k:"sep"});
+  rows.push({k:"Bundle Name", v:step.bundle, id:"bundle", empty:"leave blank"});
+  rows.push({k:"Parent Mod", v:step.parent, id:"parent", empty:"leave blank",
+    sub: step.parent ? "Matches that menu's Display Name" : ""});
+  if(step.parent) rows.push({k:"Create Parent Menu", v:"Off", id:"cpm", sub:"That menu already exists"});
+
+  var html = "", changed = [];
+  for(var i=0;i<rows.length;i++){
+    var r = rows[i];
+    if(r.k === "sep"){ html += '<div class="dlg-sep"></div>'; continue; }
+    var prevVal = prev ? prev[r.id] : undefined;
+    var isChanged = !prev || prevVal !== r.v;
+    if(isChanged && prev && r.id !== "dir") changed.push(r.k);
+    var val = r.v;
+    var boxCls = "box" + (val ? "" : " empty");
+    var shown = val ? esc(val) : (r.empty || "empty");
+    var sub = r.sub || "";
+    if(!isChanged && prev) sub = "Unchanged from the last export";
+    html += '<div class="row ' + (!prev ? "" : (isChanged ? "chg" : "same")) + '">' +
+      '<div class="k">' + r.k + '</div><div class="v"><div class="' + boxCls + '">' + shown + '</div>' +
+      (sub ? '<span class="sub' + (!isChanged && prev ? "" : "") + '">' + sub + '</span>' : "") +
+      '</div></div>';
+  }
+  var vals = {};
+  for(var j=0;j<rows.length;j++){ if(rows[j].k !== "sep") vals[rows[j].id] = rows[j].v; }
+  return {html:html, vals:vals, changed:changed};
+}
+
+/* ---------- warnings ---------- */
+function warnings(plan){
+  var w = [], seen = Object.create(null), folders = Object.create(null), i;
+  for(i=0;i<plan.length;i++){
+    var s = plan[i];
+    if(!s.display.trim()) w.push("Export " + s.n + " has no Display Name. Fluffy needs one for every entry.");
+    if(s.parent && s.display.trim() === s.parent.trim())
+      w.push("<b>" + esc(s.display) + "</b> has the same name as the menu it goes inside. The exporter rejects that &mdash; rename one.");
+    if(/[<>:"\/\\|?*]/.test(s.folder))
+      w.push("The folder name <b>" + esc(s.folder) + "</b> contains a character Windows will not accept.");
+    if(s.folder !== s.folder.trim() || /\.$/.test(s.folder) || /[\x00-\x1f]/.test(s.folder))
+      w.push("The folder name <b>" + esc(s.folder) + "</b> needs its spaces, trailing dot or control characters removed.");
+    var folderKey = s.folder.trim().toLowerCase();
+    if(folders[folderKey]) w.push("Two exports use the folder <b>" + esc(s.folder) + "</b>. Give each variant a different folder so one does not replace the other.");
+    folders[folderKey] = true;
+    var key = s.display.trim().toLowerCase();
+    if(key && seen[key]) w.push("Two entries are both called <b>" + esc(s.display) + "</b>. Parent Mod matches by name, so keep every name unique.");
+    if(key) seen[key] = true;
+  }
+  if(state.mode === "bundle" && !state.bundleName.trim())
+    w.push("Without a Bundle Name the variants install as separate mods instead of one group.");
+  return w;
+}
+
+/* ---------- render ---------- */
+function render(){
+  var plan = buildPlan();
+  document.getElementById("planhint").textContent = plan.length + (plan.length === 1 ? " export" : " exports");
+
+  var tb = document.querySelector("#summary tbody"), rows = "", i;
+  for(i=0;i<plan.length;i++){
+    var s = plan[i];
+    rows += "<tr><td class='num'>" + s.n + "</td>" +
+      "<td><span class='chip " + (s.kind === "mesh" ? "mesh'>Mesh Mod" : "menu'>Menu Only") + "</span></td>" +
+      "<td><span class='mono'>" + esc(s.folder) + "</span></td>" +
+      "<td>" + esc(s.display) + "</td>" +
+      "<td>" + (s.bundle ? esc(s.bundle) : "<span class='dash'>&mdash;</span>") + "</td>" +
+      "<td>" + (s.parent ? esc(s.parent) : "<span class='dash'>&mdash;</span>") + "</td></tr>";
+  }
+  tb.innerHTML = rows;
+
+  var steps = document.getElementById("steps"), html = "", prev = null;
+  for(i=0;i<plan.length;i++){
+    var st = plan[i];
+    var f = fieldRows(st, prev);
+    prev = f.vals;
+    var ini = modinfo(st);
+    var iniText = "";
+    for(var j=0;j<ini.length;j++){ iniText += ini[j][0] + "=" + ini[j][1] + "\n"; }
+    var iniHtml = "";
+    for(j=0;j<ini.length;j++){ iniHtml += '<span class="k">' + ini[j][0] + '=</span>' + esc(ini[j][1]) + "\n"; }
+
+    var chips = "";
+    if(f.changed.length){
+      chips = '<div class="changes"><span class="lbl">Change only</span>';
+      for(j=0;j<f.changed.length;j++) chips += '<span class="chip key">' + f.changed[j] + "</span>";
+      chips += "</div>";
+    }
+
+    var wrote = st.kind === "mesh"
+      ? esc(st.folder) + "\\" + esc(gamePath(st.slot)) + "\n" + esc(st.folder) + "\\modinfo.ini"
+      : esc(st.folder) + "\\modinfo.ini";
+
+    html += '<article class="panel"><div class="panel-bd">' +
+      '<div class="step-hd"><span class="step-n">Export ' + st.n + " / " + st.total + '</span>' +
+      '<h3>' + esc(st.title) + "</h3>" +
+      '<span class="chip ' + (st.kind === "mesh" ? "mesh\">Mesh Mod" : "menu\">Menu Only") + "</span></div>" +
+      '<p class="step-why">' + st.why + "</p>" +
+      (st.kind === "mesh" ? '<p class="step-why" style="font-size:13.5px; color:var(--ink3)">Select the <b>' + esc(st.display || "variant") + "</b> mesh in Blender before you open the exporter.</p>" : "") +
+      chips +
+      '<div class="dlg"><div class="dlg-hd"><span>Blender &middot; Export SF6 Mod Folder</span><span style="font-weight:400; color:var(--ink3)">relevant fields</span></div>' +
+      '<div class="dlg-bd">' + f.html + "</div>" +
+      '<div class="dlg-ft"><span class="fakebtn">Export Mod Folder</span></div></div>' +
+      '<div class="after">' +
+        '<div class="mini"><div class="mini-hd"><span>Example modinfo.ini</span><button class="copy" type="button" data-text="' + esc(iniText) + '">Copy</button></div>' +
+        '<div class="mini-bd"><pre>' + iniHtml + "</pre></div></div>" +
+        '<div class="mini"><div class="mini-hd"><span>Example Fluffy menu</span></div>' +
+        '<div class="mini-bd"><div class="tree">' + renderTree(treeAfter(plan, i), true) + "</div></div></div>" +
+      "</div>" +
+      '<div class="mini" style="margin-top:14px"><div class="mini-hd"><span>Files created</span></div><div class="mini-bd"><pre>' + wrote + "</pre></div></div>" +
+      "</div></article>";
+  }
+  steps.innerHTML = html;
+
+  document.getElementById("finaltree").innerHTML = renderTree(treeAfter(plan, plan.length-1), false);
+  var disk = state.modspath + "\\";
+  for(i=0;i<plan.length;i++) disk += "\n  " + plan[i].folder + "\\";
+  document.getElementById("finaldisk").textContent = disk;
+
+  var w = warnings(plan), wh = "";
+  for(i=0;i<w.length;i++) wh += '<div class="warn"><span>&#9888;</span><span>' + w[i] + "</span></div>";
+  document.getElementById("warns").innerHTML = wh;
+
+  save();
+}
+
+/* ---------- inputs ---------- */
+function opt(v,label,sel){ return '<option value="' + v + '"' + (sel === v ? " selected" : "") + ">" + label + "</option>"; }
+
+function buildStatics(){
+  var ids = Object.keys(CHARACTERS).sort(), h = "";
+  for(var i=0;i<ids.length;i++) h += opt(ids[i], CHARACTERS[ids[i]] + "  (esf" + ids[i] + ")", state.character);
+  document.getElementById("character").innerHTML = h;
+
+  h = "";
+  for(i=1;i<=3;i++){ var v = ("00" + i).slice(-3); h += opt(v, "C" + i + "  (" + v + ")", state.costume); }
+  document.getElementById("costume").innerHTML = h;
+
+  h = "";
+  for(var s in SLOTS) h += opt(s, SLOTS[s] + "  (" + s + ")", state.bundleSlot);
+  document.getElementById("bundleslot").innerHTML = h;
+
+  document.getElementById("author").value = state.author;
+  document.getElementById("modspath").value = state.modspath;
+  document.getElementById("bundlename").value = state.bundleName;
+  document.getElementById("packname").value = state.packName;
+}
+
+function renderVarList(){
+  var box = document.getElementById("bundlevars"), h = "";
+  for(var i=0;i<state.bundleVars.length;i++){
+    h += '<div class="varrow"><span class="idx">' + (i+1) + '</span>' +
+      '<input type="text" id="bv' + i + '" data-i="' + i + '" value="' + esc(state.bundleVars[i]) + '" placeholder="variant name">' +
+      (state.bundleVars.length > 1 ? '<button class="iconbtn" type="button" data-del="' + i + '" aria-label="Remove variant">&times;</button>' : "") +
+      "</div>";
+  }
+  box.innerHTML = h;
+}
+
+function renderGroups(){
+  var box = document.getElementById("groups"), h = "";
+  for(var g=0; g<state.groups.length; g++){
+    var grp = state.groups[g], sl = "";
+    for(var s in SLOTS) sl += opt(s, SLOTS[s] + "  (" + s + ")", grp.slot);
+    h += '<div class="groupbox"><div class="groupbox-hd"><span class="eyebrow">Group ' + (g+1) + "</span>" +
+      (state.groups.length > 1 ? '<button class="iconbtn" type="button" data-delgroup="' + g + '" aria-label="Remove group">&times;</button>' : "") +
+      "</div>" +
+      '<div class="grid g2" style="margin-bottom:12px">' +
+      '<label class="fld"><span>Submenu name</span><input type="text" id="gn' + g + '" data-gname="' + g + '" value="' + esc(grp.name) + '" placeholder="e.g. Hair Options"></label>' +
+      '<label class="fld"><span>Which mesh</span><select id="gs' + g + '" data-gslot="' + g + '">' + sl + "</select></label></div>" +
+      '<span class="eyebrow" style="display:block; margin-bottom:6px">Variants</span><div class="varlist">';
+    for(var i=0;i<grp.vars.length;i++){
+      h += '<div class="varrow"><span class="idx">' + (i+1) + '</span>' +
+        '<input type="text" id="gv' + g + "_" + i + '" data-g="' + g + '" data-i="' + i + '" value="' + esc(grp.vars[i]) + '" placeholder="variant name">' +
+        (grp.vars.length > 1 ? '<button class="iconbtn" type="button" data-delgvar="' + g + "_" + i + '" aria-label="Remove variant">&times;</button>' : "") +
+        "</div>";
+    }
+    h += '</div><div style="margin-top:9px"><button class="addbtn" type="button" data-addgvar="' + g + '">+ Add variant</button></div></div>';
+  }
+  box.innerHTML = h;
+}
+
+function setMode(mode){
+  state.mode = mode;
+  document.getElementById("tab-bundle").setAttribute("aria-selected", mode === "bundle");
+  document.getElementById("tab-nested").setAttribute("aria-selected", mode === "nested");
+  document.getElementById("bundle-inputs").hidden = mode !== "bundle";
+  document.getElementById("nested-inputs").hidden = mode !== "nested";
+  render();
+}
+
+/* ---------- events ---------- */
+document.getElementById("tab-bundle").addEventListener("click", function(){ setMode("bundle"); });
+document.getElementById("tab-nested").addEventListener("click", function(){ setMode("nested"); });
+
+document.getElementById("character").addEventListener("change", function(){ state.character = this.value; render(); });
+document.getElementById("costume").addEventListener("change", function(){ state.costume = this.value; render(); });
+document.getElementById("bundleslot").addEventListener("change", function(){ state.bundleSlot = this.value; render(); });
+document.getElementById("author").addEventListener("input", function(){ state.author = this.value; render(); });
+document.getElementById("modspath").addEventListener("input", function(){ state.modspath = this.value; render(); });
+document.getElementById("bundlename").addEventListener("input", function(){ state.bundleName = this.value; render(); });
+document.getElementById("packname").addEventListener("input", function(){ state.packName = this.value; render(); });
+
+document.getElementById("bundlevars").addEventListener("input", function(e){
+  var i = e.target.getAttribute("data-i");
+  if(i !== null){ state.bundleVars[+i] = e.target.value; render(); }
+});
+document.getElementById("bundlevars").addEventListener("click", function(e){
+  var d = e.target.getAttribute("data-del");
+  if(d !== null){ state.bundleVars.splice(+d,1); renderVarList(); render(); }
+});
+document.getElementById("addbundlevar").addEventListener("click", function(){
+  state.bundleVars.push(""); renderVarList(); render();
+  var last = document.getElementById("bv" + (state.bundleVars.length-1)); if(last) last.focus();
+});
+
+var groupsBox = document.getElementById("groups");
+groupsBox.addEventListener("input", function(e){
+  var gn = e.target.getAttribute("data-gname");
+  if(gn !== null){ state.groups[+gn].name = e.target.value; render(); return; }
+  var g = e.target.getAttribute("data-g"), i = e.target.getAttribute("data-i");
+  if(g !== null && i !== null){ state.groups[+g].vars[+i] = e.target.value; render(); }
+});
+groupsBox.addEventListener("change", function(e){
+  var gs = e.target.getAttribute("data-gslot");
+  if(gs !== null){ state.groups[+gs].slot = e.target.value; render(); }
+});
+groupsBox.addEventListener("click", function(e){
+  var add = e.target.getAttribute("data-addgvar");
+  if(add !== null){ state.groups[+add].vars.push(""); renderGroups(); render();
+    var f = document.getElementById("gv" + add + "_" + (state.groups[+add].vars.length-1)); if(f) f.focus(); return; }
+  var del = e.target.getAttribute("data-delgvar");
+  if(del !== null){ var p = del.split("_"); state.groups[+p[0]].vars.splice(+p[1],1); renderGroups(); render(); return; }
+  var dg = e.target.getAttribute("data-delgroup");
+  if(dg !== null){ state.groups.splice(+dg,1); renderGroups(); render(); }
+});
+document.getElementById("addgroup").addEventListener("click", function(){
+  state.groups.push({name:"", slot:"01", vars:[""]});
+  renderGroups(); render();
+  var f = document.getElementById("gn" + (state.groups.length-1)); if(f) f.focus();
+});
+
+document.addEventListener("click", function(e){
+  var btn = e.target.closest ? e.target.closest(".copy") : null;
+  if(!btn) return;
+  var text = btn.getAttribute("data-text");
+  if(!text){
+    var t = btn.getAttribute("data-copy");
+    if(t){ var el = document.getElementById(t); text = el ? el.textContent : ""; }
+  }
+  if(!text) return;
+  var done = function(){ btn.textContent = "Copied"; btn.classList.add("done");
+    setTimeout(function(){ btn.textContent = "Copy"; btn.classList.remove("done"); }, 1400); };
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(text).then(done, function(){});
+  } else {
+    var ta = document.createElement("textarea"); ta.value = text; document.body.appendChild(ta);
+    ta.select(); try{ document.execCommand("copy"); done(); }catch(err){} document.body.removeChild(ta);
+  }
+});
+
+function setTheme(theme){
+  document.documentElement.setAttribute("data-theme", theme);
+  document.getElementById("themebtn").textContent = theme === "dark" ? "Light theme" : "Dark theme";
+}
+document.getElementById("themebtn").addEventListener("click", function(){
+  var next = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark";
+  setTheme(next);
+  try{ localStorage.setItem(STORE + "-theme", next); }catch(e){}
+});
+try{
+  var theme = localStorage.getItem(STORE + "-theme");
+  if(theme === "light" || theme === "dark") setTheme(theme);
+}catch(e){}
+
+buildStatics();
+renderVarList();
+renderGroups();
+setMode(state.mode);
+})();
+</script>
+
+</body>
+</html>
