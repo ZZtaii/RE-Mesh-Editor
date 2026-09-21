@@ -514,8 +514,8 @@ class REMeshPreferences(AddonPreferences):
 	   description = "Rotate meshes and armatures by 90 degrees. Leaving this option enabled is recommended",
 	   default = True)
 	default_importBlendShapes : BoolProperty(
-	   name = "Import Blend Shapes",
-	   description = "Imports blend shapes as shape keys if present",
+	   name = "SF6: Preserve Source + Shape Keys",
+	   description = "Keep supported SF6 source mesh data and import corrective shapes for preservation export",
 	   default = True)
 	default_importShadowMeshes : BoolProperty(
 	   name = "Import Shadow Cast Mesh",
@@ -545,8 +545,8 @@ class REMeshPreferences(AddonPreferences):
 	   description = "Export all LODs. If disabled, only LOD0 will be exported. Note that LODs meshes must be grouped inside a collection for each level and that collection must be contained in another collection. See a mesh with LODs imported for reference on how it should look. A target collection must also be set",
 	   default = True)
 	default_exportBlendShapes : BoolProperty(
-	   name = "Export Blend Shapes",
-	   description = "Exports blend shapes from mesh if present",
+	   name = "SF6: Preserve Source Data",
+	   description = "Preserve supported SF6 source data; requires an original imported with Preserve Source + Shape Keys. Disable explicitly to use ordinary export",
 	   default = True)
 	default_rotate90export : BoolProperty(
 	   name = "Convert Z Up To Y Up",
@@ -748,8 +748,8 @@ class ImportREMesh(Operator, ImportHelper):
 	   description = "Rotate meshes and armatures by 90 degrees. Leaving this option enabled is recommended",
 	   default = True)
 	importBlendShapes : BoolProperty(
-	   name = "Import Blend Shapes",
-	   description = "Imports blend shapes as shape keys if present",
+	   name = "SF6: Preserve Source + Shape Keys",
+	   description = "Keep supported SF6 source mesh data and import corrective shapes for preservation export",
 	   default = True)
 	importShadowMeshes : BoolProperty(
 	   name = "Import Shadow Cast Mesh",
@@ -845,7 +845,7 @@ class ImportREMesh(Operator, ImportHelper):
 		
 		bpy.context.scene["REMeshDefaultImportSettingsLoaded"] = 1
 		
-		if bpy.context.preferences.addons[__name__].preferences.showConsole:
+		if not bpy.app.background and bpy.context.preferences.addons[__name__].preferences.showConsole:
 			 try: 
 				 bpy.ops.wm.console_toggle()
 			 except:
@@ -853,33 +853,40 @@ class ImportREMesh(Operator, ImportHelper):
 		
 		multiFileImport = len(self.files) > 1
 		hasImportErrors = False
+		importedCount = 0
 		mergeArmatureName = ""
-		mergeArmatureNameIndex = 1
-		if multiFileImport and self.mergeImportedArmatures:
-			mergeArmatureName = self.files[0].name.split(".mesh")[0] + " Armature"
-			baseMergeArmatureName = mergeArmatureName
-			while mergeArmatureName in bpy.data.armatures:#Get the name of armature that will be imported, this accounts for if there's already an armature with that name imported
-				mergeArmatureName = baseMergeArmatureName + "." + str(mergeArmatureNameIndex).zfill(3)
-				mergeArmatureNameIndex += 1
 			
 		for index, file in enumerate(self.files):
 			filepath = os.path.join(self.directory,file.name)
+			errorMessage = "Import failed; see the system console for details."
 			if multiFileImport:
 				print(f"Multi Mesh Import ({index+1}/{len(self.files)})")
-				if index != 0:
+				if importedCount and self.mergeImportedArmatures:
 					options["mergeArmature"] = mergeArmatureName
-			if os.path.isfile(filepath):
+			if multiFileImport and self.mergeImportedArmatures and not mergeArmatureName:
+				armaturesBefore = set(bpy.data.armatures.keys()) if not options["clearScene"] else set()
+			try:
+				if not os.path.isfile(filepath):
+					raise FileNotFoundError("File does not exist: " + filepath)
 				success = importREMeshFile(filepath,options)
-				options["clearScene"] = False#Disable clear scene after first mesh is imported
-				if not success: hasImportErrors = True
+			except Exception as error:
+				success = False
+				errorMessage = str(error)
+			if success:
+				importedCount += 1
+				options["clearScene"] = False
+				if multiFileImport and self.mergeImportedArmatures and not mergeArmatureName:
+					# Import merging takes a data name, even without mesh collections.
+					mergeArmatureName = options["mergeArmature"] if options["mergeArmature"] in bpy.data.armatures else next(
+						(armature.name for armature in bpy.data.armatures if armature.name not in armaturesBefore), "")
 			else:
 				hasImportErrors = True
-				raiseWarning(f"Path does not exist, cannot import file. If you are importing multiple files at once, they must all be in the same directory.\nInvalid Path:{filepath}")
+				self.report({'WARNING'} if multiFileImport else {'ERROR'}, f"{file.name}: {errorMessage}")
 			
 			
 			
 		if not hasImportErrors:
-			if bpy.context.preferences.addons[__name__].preferences.showConsole:
+			if not bpy.app.background and bpy.context.preferences.addons[__name__].preferences.showConsole:
 				try: 
 					bpy.ops.wm.console_toggle()
 				except:
@@ -893,8 +900,9 @@ class ImportREMesh(Operator, ImportHelper):
 			
 			return {"FINISHED"}
 		else:
-			self.report({"INFO"},"Failed to import RE Mesh. Check the console for errors.")
-			return {"CANCELLED"}
+			self.report({'WARNING'}, f"Imported {importedCount}/{len(self.files)} RE Mesh files; {len(self.files)-importedCount} failed.")
+			# Keep partial imports undoable; report a failure only when none succeeded.
+			return {"FINISHED"} if importedCount else {"CANCELLED"}
 	
 	def invoke(self, context, event):
 		if not bpy.context.scene.get("REMeshDefaultImportSettingsLoaded"):
@@ -971,8 +979,8 @@ class ExportREMesh(Operator, ExportHelper):
 	   description = "Export all LODs. If disabled, only LOD0 will be exported. Note that LODs meshes must be grouped inside a collection for each level and that collection must be contained in another collection. See a mesh with LODs imported for reference on how it should look. A target collection must also be set",
 	   default = True)
 	exportBlendShapes : BoolProperty(
-	   name = "Export Blend Shapes",
-	   description = "Exports blend shapes from mesh if present",
+	   name = "SF6: Preserve Source Data",
+	   description = "Preserve supported SF6 source data; requires an original imported with Preserve Source + Shape Keys. Disable explicitly to use ordinary export",
 	   default = True)
 	rotate90 : BoolProperty(
 	   name = "Convert Z Up To Y Up",
@@ -1104,12 +1112,16 @@ class ExportREMesh(Operator, ExportHelper):
 		
 		bpy.context.scene["REMeshDefaultExportSettingsLoaded"] = 1
 		
-		if bpy.context.preferences.addons[__name__].preferences.showConsole:
+		if not bpy.app.background and bpy.context.preferences.addons[__name__].preferences.showConsole:
 			try: 
 				bpy.ops.wm.console_toggle()
 			except:
 				pass
-		success = exportREMeshFile(self.filepath,options)
+		try:
+			success = exportREMeshFile(self.filepath,options)
+		except Exception as error:
+			self.report({'ERROR'}, str(error))
+			return {'CANCELLED'}
 		if success:
 			self.report({"INFO"},"Exported RE Mesh successfully.")
 			if self.targetCollection in bpy.data.collections:
@@ -1122,12 +1134,13 @@ class ExportREMesh(Operator, ExportHelper):
 				bpy.data.collections[self.targetCollection]["BatchExport_preserveBoneMatrices"] = self.preserveBoneMatrices
 				bpy.data.collections[self.targetCollection]["BatchExport_exportBoundingBoxes"] = self.exportBoundingBoxes
 		else:
-			self.report({"INFO"},"RE Mesh export failed. See Window > Toggle System Console for info on how to fix it.")
+			self.report({"ERROR"},"RE Mesh export failed. See Window > Toggle System Console for info on how to fix it.")
+			return {'CANCELLED'}
 		
 		if bpy.context.scene.re_mdf_toolpanel.modDirectory == "":
 			setModDirectoryFromFilePath(self.filepath)
 		
-		if bpy.context.preferences.addons[__name__].preferences.showConsole:
+		if not bpy.app.background and bpy.context.preferences.addons[__name__].preferences.showConsole:
 			try:
 				bpy.ops.wm.console_toggle()
 			except:
@@ -1866,4 +1879,3 @@ def unregister():
 		bpy.utils.unregister_class(SFUR_FH_drag_import)
 if __name__ == '__main__':
 	register()
-	

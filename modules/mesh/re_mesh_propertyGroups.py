@@ -88,8 +88,8 @@ class ExporterNodePropertyGroup(bpy.types.PropertyGroup):
 	   description = "Export all LODs. If disabled, only LOD0 will be exported. Note that LODs meshes must be grouped inside a collection for each level and that collection must be contained in another collection. See a mesh with LODs imported for reference on how it should look. A target collection must also be set",
 	   default = True)
 	exportBlendShapes : BoolProperty(
-	   name = "Export Blend Shapes",
-	   description = "Exports blend shapes from mesh if present",
+	   name = "SF6: Preserve Source Data",
+	   description = "Preserve supported SF6 source data; requires an original imported with Preserve Source + Shape Keys. Disable explicitly to use ordinary export",
 	   default = True)
 	rotate90 : BoolProperty(
 	   name = "Convert Z Up To Y Up",
