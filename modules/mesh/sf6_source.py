@@ -242,7 +242,6 @@ def attach_source(filepath, collection, objects, rotate=True, source=None):
                 key.data.foreach_set('co',(basis+_to_blender(delta,rotate)).ravel())
         mesh.update()
         # Snapshot editable channels Blender represents differently from raw SF6.
-        obj['SF6OriginalUV'] = json.dumps([list(uv.uv) for uv in mesh.uv_layers[0].data]) if mesh.uv_layers else '[]'
         obj['SF6OriginalWeights'] = json.dumps([[(obj.vertex_groups[g.group].name,g.weight) for g in v.groups] for v in mesh.vertices])
         obj['SF6OriginalMaterials'] = json.dumps([m.name if m else None for m in mesh.materials])
     armatures = [o for o in collection.all_objects if o.type == 'ARMATURE']

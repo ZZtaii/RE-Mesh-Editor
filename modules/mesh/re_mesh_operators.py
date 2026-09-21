@@ -276,13 +276,14 @@ def populateCollectionList(itemList,collection,recursionLevel,parentName):
 		
 		if collection["~TYPE"] == "RE_MESH_COLLECTION":
 			item.exportType = "MESH"
+			preferences = bpy.context.preferences.addons[__package__.split('.')[0]].preferences
+			item.exportBlendShapes = collection.get("BatchExport_exportBlendShapes", preferences.default_exportBlendShapes)
 			
 			if "BatchExport_exportAllLODs" in collection:
 				try:
 					item.exportAllLODs = collection["BatchExport_exportAllLODs"]
 					item.preserveSharpEdges = collection["BatchExport_preserveSharpEdges"]
 					item.rotate90 = collection["BatchExport_rotate90"]
-					#item.exportBlendShapes = collection["BatchExport_exportBlendShapes"]
 					item.useBlenderMaterialName = collection["BatchExport_useBlenderMaterialName"]
 					item.preserveBoneMatrices = collection["BatchExport_preserveBoneMatrices"]
 					item.exportBoundingBoxes = collection["BatchExport_exportBoundingBoxes"]
@@ -336,8 +337,11 @@ class WM_OT_REBatchExporter(Operator):
 	skipPrompt : bpy.props.BoolProperty(#Not exposed to user
 	   name = "Skip Conversion Prompt",
 	   description = "",
+	   options = {'HIDDEN', 'SKIP_SAVE'},
 	   default = False)
 	def execute(self, context):
+		if self.skipPrompt:
+			self.populate(context)
 		print("Batch export started.")
 		
 		#Save which files are enabled
@@ -349,6 +353,9 @@ class WM_OT_REBatchExporter(Operator):
 					bpy.data.collections[item.name]["BatchExport_enabled"] = item.enabled
 		
 		exportItemList = [item for item in self.itemList_items if not item.hasChild and item.enabled and item.exportType != ""]
+		if not exportItemList:
+			self.report({'WARNING'}, "No files are enabled for batch export.")
+			return {'CANCELLED'}
 		failCount = 0
 		for index,exportItem in enumerate(exportItemList):
 			if exportItem.invalid:
@@ -359,13 +366,19 @@ class WM_OT_REBatchExporter(Operator):
 			
 			
 			print(f"Exporting File: {exportItem.name} ({index+1}/{len(exportItemList)})")
-			os.makedirs(os.path.split(exportItem.path)[0],exist_ok = True)
+			try:
+				os.makedirs(os.path.dirname(os.path.abspath(exportItem.path)),exist_ok = True)
+			except OSError as error:
+				self.report({'WARNING'}, f"Cannot create export directory for {exportItem.name}: {error}")
+				failCount += 1
+				continue
 			if exportItem.exportType == "MESH":
 				try:
-					bpy.ops.re_mesh.exportfile(
+					result = bpy.ops.re_mesh.exportfile(
 						filepath = exportItem.path,
 						targetCollection = exportItem.name,
 						exportAllLODs = exportItem.exportAllLODs,
+						exportBlendShapes = exportItem.exportBlendShapes,
 						autoSolveRepeatedUVs = exportItem.autoSolveRepeatedUVs,
 						preserveSharpEdges = exportItem.preserveSharpEdges,
 						rotate90 = exportItem.rotate90,
@@ -373,6 +386,8 @@ class WM_OT_REBatchExporter(Operator):
 						preserveBoneMatrices = exportItem.preserveBoneMatrices,
 						exportBoundingBoxes = exportItem.exportBoundingBoxes,
 						)
+					if 'FINISHED' not in result:
+						failCount += 1
 				except Exception as err:
 					print(f"Mesh Export Failed: {str(err)}")
 					failCount += 1
@@ -446,19 +461,16 @@ class WM_OT_REBatchExporter(Operator):
 				print(f"Unsupported File Type ({exportItem.exportType}), skipping")
 				failCount += 1
 		if failCount != 0:
-			showErrorMessageBox(f"{failCount}/{len(exportItemList)} files failed to export.\nSee console for details. (Window > Toggle System Console)")
+			message = f"{failCount}/{len(exportItemList)} files failed to export. See the system console for details."
+			self.report({'WARNING'}, message)
+			if not bpy.app.background:
+				showErrorMessageBox(message)
+			return {'CANCELLED'}
 		else:
 			self.report({"INFO"},"Batch export finished successfully.")
 		return {'FINISHED'}
 	
-	def invoke(self, context, event):
-		region = bpy.context.region
-		centerX = region.width // 2
-		centerY = region.height
-		
-		#currentX = event.mouse_region_X
-		#currentY = event.mouse_region_Y
-		
+	def populate(self, context):
 		parentDict = {None:None}
 		for collection in bpy.data.collections:
 			parentDict[collection] = None
@@ -507,11 +519,14 @@ class WM_OT_REBatchExporter(Operator):
 								item.path = determineExportPath(split[0],item.exportType,assetPath.replace("/",os.sep),bpy.context.scene)
 					except Exception as err:
 						print(f"Batch Export: Cannot auto determine path for {item.name}: {str(err)}")
+	def invoke(self, context, event):
 		if self.skipPrompt:
 			return self.execute(context)
 		else:
+			self.populate(context)
 			#Move cursor to center so extract window is at the center of the window
-			context.window.cursor_warp(centerX,centerY)
+			if context.region and context.window:
+				context.window.cursor_warp(context.region.width // 2, context.region.height)
 		
 			return context.window_manager.invoke_props_dialog(self,width = EXPORTER_WINDOW_SIZE,confirm_text = "Batch Export Files")
 
@@ -558,7 +573,7 @@ class WM_OT_REBatchExporter(Operator):
 					row.label(text="Path is empty or missing the file version number on the end. ",icon = "ERROR")
 				if item.exportType == "MESH":
 					box.prop(item, "exportAllLODs")
-					#box.prop(self, "exportBlendShapes")
+					box.prop(item, "exportBlendShapes")
 					box.prop(item,"autoSolveRepeatedUVs")
 					box.prop(item,"preserveSharpEdges")
 					box.prop(item, "rotate90")
@@ -593,5 +608,4 @@ class WM_OT_QuickBatchExport(Operator):
 	bl_idname = "re_mesh.quick_batch_export"
 	bl_description = "Single click batch export. Works the same as RE Batch Export but there is no prompt to configure settings.\nThe previous settings of RE Batch Export are used."
 	def execute(self, context):
-		bpy.ops.re_mesh.batch_exporter()
-		return {'FINISHED'}
+		return bpy.ops.re_mesh.batch_exporter('EXEC_DEFAULT', skipPrompt=True)
