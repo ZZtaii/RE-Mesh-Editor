@@ -8,9 +8,9 @@ This is a fork of [RE Mesh Editor](https://github.com/NSACloud/RE-Mesh-Editor) b
 
 ### [Download the latest release](https://github.com/ZZtaii/RE-Mesh-Editor/releases/latest)
 
-Current release: **V0.66-SF6.3** · [Change log](#change-log) · [SF6 workflows](#street-fighter-6-workflows)
+Current release: **V0.66-SF6.4** · [Change log](#change-log) · [SF6 workflows](#street-fighter-6-workflows)
 
-> **V0.66-SF6.3 is the stable fork release.** Changes listed under **Unreleased** below are on `main` and are not yet in that release. Keep backups of your work.
+> **V0.66-SF6.4 is the stable fork release.** Keep backups of your work and follow the source-preservation limits below.
 
 > **Tested with Blender 4.5.3 LTS.** For newer versions, check [the upstream Blender performance report](https://projects.blender.org/blender/blender/issues/155858) and its current status.
 
@@ -53,7 +53,7 @@ A mesh file that fails to parse no longer wipes your scene first. Source-preserv
 
 If you are replacing an existing installation, save your work and restart Blender afterwards.
 
-**Updating:** reinstall from the [latest fork release](https://github.com/ZZtaii/RE-Mesh-Editor/releases/latest), then restart Blender. Current `main` provides an **Open Fork Releases** button for this manual workflow. V0.66-SF6.3 and older builds still show the upstream updater; use the fork's release page instead of that updater.
+**Updating:** reinstall from the [latest fork release](https://github.com/ZZtaii/RE-Mesh-Editor/releases/latest), then restart Blender. V0.66-SF6.4 provides an **Open Fork Releases** button for this manual workflow. V0.66-SF6.3 and older builds still show the upstream updater; use the fork's release page instead of that updater.
 
 The addon's internal version still reads `0.66`, which is the upstream version this fork is based on. The `SF6.x` part of the release tag is the fork's own revision.
 
@@ -256,7 +256,7 @@ Questions about the SF6 features in this fork belong on [this repository's issue
 
 ## Change log
 
-### Unreleased — on main
+### V0.66-SF6.4
 * Exposed and forwarded the SF6 source-preservation option in batch and quick export, and clarified its preference labels.
 * Improved mesh operator failure reporting and background-process handling, and stopped writing unused UV snapshots on new imports.
 * Replaced the upstream automatic updater with **Open Fork Releases** for manual installation.
