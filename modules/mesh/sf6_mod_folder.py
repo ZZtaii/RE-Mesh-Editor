@@ -22,9 +22,11 @@ MESH_NAME = re.compile(
     r'esf(?P<character>\d{3})_(?P<costume>\d{3})_(?P<slot>\d{2})'
     r'\.mesh(?:\.230110883)?(?:\.\d{3})?', re.IGNORECASE)
 FIELDS = ('name', 'version', 'author', 'category', 'description', 'screenshot')
+BUNDLE_FIELDS = ('nameasbundle', 'addonfor', 'dummymod')
 DEFAULT_FIELDS = ('parent_directory', 'folder_name', 'mod_name', 'mod_version',
                   'mod_author', 'mod_category', 'mod_description', 'preview_path',
-                  'last_character')
+                  'last_character', 'extra_categories', 'bundle_name', 'parent_mod_name',
+                  'create_dummy_parent', 'parent_folder_name', 'parent_categories', 'export_content')
 
 
 @dataclass(frozen=True)
@@ -103,25 +105,56 @@ def read_modinfo(path):
     for line in Path(path).read_text(encoding='utf-8-sig').splitlines():
         if '=' in line and not line.lstrip().startswith((';', '#')):
             key, value = line.split('=', 1)
-            result[key.strip().lower()] = value.strip()
+            key, value = key.strip().lower(), value.strip()
+            if key == 'category':
+                result.setdefault('categories', []).append(value)
+                result.setdefault('category', value)
+            else:
+                result[key] = value
     return result
 
 
+def categories_from_text(value):
+    """The dialog accepts semicolon-separated categories, written as repeated keys."""
+    entries = value.split(';') if isinstance(value, str) else value
+    return list(dict.fromkeys(text for entry in entries if (text := _field_value(entry))))
+
+
+def _description_value(value):
+    value = str(value).replace('\r\n', '\n').replace('\r', '\n').replace('\n', r'\n')
+    return _field_value(value)
+
+
 def render_modinfo(values, existing=''):
-    values = {key: _field_value(values.get(key, '')) for key in FIELDS}
-    if not values['name']:
+    normalized = {}
+    for key in FIELDS + tuple(key for key in BUNDLE_FIELDS if key in values):
+        value = values.get(key, '')
+        if key == 'category':
+            normalized[key] = categories_from_text(value)
+        else:
+            value = _description_value(value) if key == 'description' else _field_value(value)
+            normalized[key] = [value] if value else []
+    if not normalized['name']:
         raise ValueError('Enter the name displayed in Fluffy Mod Manager.')
     result, seen = [], set()
     for line in existing.splitlines():
         key = line.split('=', 1)[0].strip().lower() if '=' in line else ''
-        if key in values:
-            if key not in seen and values[key]:
-                result.append(key + '=' + values[key])
+        if key in normalized:
+            if key not in seen:
+                result.extend(key + '=' + value for value in normalized[key])
             seen.add(key)
         else:
             result.append(line)
-    result.extend(key + '=' + values[key] for key in FIELDS if key not in seen and values[key])
+    result.extend(key + '=' + value for key in normalized if key not in seen for value in normalized[key])
     return '\n'.join(result).rstrip() + '\n'
+
+
+def filter_defaults(values):
+    result = {key: values[key] for key in DEFAULT_FIELDS
+              if isinstance(values.get(key), bool if key == 'create_dummy_parent' else str)}
+    if result.get('export_content') not in ('MESH', 'MENU'):
+        result.pop('export_content', None)
+    return result
 
 
 def load_defaults(path):
@@ -131,13 +164,13 @@ def load_defaults(path):
         return {}
     if not isinstance(values, dict):
         return {}
-    return {key: values[key] for key in DEFAULT_FIELDS if isinstance(values.get(key), str)}
+    return filter_defaults(values)
 
 
 def save_defaults(path, values):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    values = {key: values[key] for key in DEFAULT_FIELDS if isinstance(values.get(key), str)}
+    values = filter_defaults(values)
     fd, temporary = tempfile.mkstemp(prefix='.sf6-defaults-', dir=path.parent)
     try:
         with os.fdopen(fd, 'w', encoding='utf-8') as stream:
@@ -206,7 +239,39 @@ def _publish_existing(staged, destination, relative_paths, backup):
         raise
 
 
-def export_mod_folder(parent_directory, folder_name, asset, values, preview_path, export_mesh):
+def dummy_folder_name(parent_mod_name, folder_name=''):
+    if not folder_name:
+        safe_name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', parent_mod_name).strip(' .')
+        folder_name = '00 ' + safe_name
+    return validate_folder_name(folder_name)
+
+
+def _plan_dummy_parent(parent, child_folder, metadata, folder_name, categories):
+    name = _field_value(metadata.get('addonfor', ''))
+    if not name:
+        raise ValueError('Enter the parent mod name before creating its menu folder.')
+    folder = dummy_folder_name(name, folder_name)
+    if folder.casefold() == child_folder.casefold():
+        raise ValueError('The dummy parent and mesh option must use different folders.')
+    root = parent / folder
+    if root.is_symlink() or (root.exists() and not root.is_dir()):
+        raise ValueError('The dummy parent destination must be a regular folder.')
+    path = _contained_path(root, 'modinfo.ini')
+    if path.is_file():
+        info = read_modinfo(path)
+        if info.get('name') != name or info.get('dummymod', '').lower() not in ('true', '1'):
+            raise ValueError('The parent folder already belongs to a different mod. Choose another menu folder.')
+        return None  # Reuse its exact name without overwriting its metadata.
+    if root.exists() and any(root.iterdir()):
+        raise ValueError('The parent folder is not empty and has no matching dummy modinfo.ini.')
+    values = dict(name=name, dummymod='True', version=metadata.get('version', ''),
+                  author=metadata.get('author', ''),
+                  category=categories or metadata.get('category', ''))
+    return Path(folder, 'modinfo.ini'), render_modinfo(values)
+
+
+def export_mod_folder(parent_directory, folder_name, asset, values, preview_path, export_mesh,
+                      *, create_dummy_parent=False, parent_folder_name='', parent_categories=''):
     """Stage a mesh, INI and optional image before updating the chosen mod folder."""
     parent = Path(parent_directory).expanduser().resolve()
     if not parent.is_dir():
@@ -214,10 +279,26 @@ def export_mod_folder(parent_directory, folder_name, asset, values, preview_path
     destination = parent / validate_folder_name(folder_name)
     if destination.is_symlink() or (destination.exists() and not destination.is_dir()):
         raise ValueError('The mod destination must be a regular folder.')
-    relative_paths = [asset.relative_path, Path('modinfo.ini')]
+    menu_only = str(values.get('dummymod', '')).lower() in ('true', '1')
+    if asset is None and not menu_only:
+        raise ValueError('Choose a mesh collection or export a menu-only dummy mod.')
+    if menu_only and asset is not None:
+        raise ValueError('A dummy menu cannot contain an exported mesh.')
+    relative_paths = ([asset.relative_path] if asset else []) + [Path('modinfo.ini')]
+    if menu_only and destination.exists():
+        if (destination / 'natives').exists():
+            raise ValueError('This folder contains game assets. Choose a separate folder for the dummy menu.')
+        previous = destination / 'modinfo.ini'
+        if previous.is_file() and read_modinfo(previous).get('dummymod', '').lower() not in ('true', '1'):
+            raise ValueError('This folder belongs to a mesh mod. Choose a separate folder for the dummy menu.')
     for relative in relative_paths:
         _contained_path(destination, relative)
     metadata = dict(values)
+    parent_name = _field_value(metadata.get('addonfor', ''))
+    if parent_name and parent_name == _field_value(metadata.get('name', '')):
+        raise ValueError('An add-on option must have a different display name from its parent mod.')
+    dummy = (_plan_dummy_parent(parent, folder_name, metadata, parent_folder_name, parent_categories)
+             if create_dummy_parent else None)
     preview = None
     if preview_path:
         preview = Path(preview_path).expanduser().resolve()
@@ -235,16 +316,26 @@ def export_mod_folder(parent_directory, folder_name, asset, values, preview_path
     temporary = Path(tempfile.mkdtemp(prefix='.re-mesh-export-', dir=parent))
     keep_backup = False
     try:
-        staged = temporary / 'mod'
-        staged_mesh = staged / asset.relative_path
-        staged_mesh.parent.mkdir(parents=True)
-        if not export_mesh(str(staged_mesh)) or not staged_mesh.is_file():
-            raise ValueError('Mesh export failed; the mod folder was not updated.')
+        staged_root = temporary / 'mods'
+        staged = staged_root / folder_name
+        staged.mkdir(parents=True)
+        if asset:
+            staged_mesh = staged / asset.relative_path
+            staged_mesh.parent.mkdir(parents=True)
+            if not export_mesh(str(staged_mesh)) or not staged_mesh.is_file():
+                raise ValueError('Mesh export failed; the mod folder was not updated.')
         (staged / 'modinfo.ini').write_text(ini, encoding='utf-8')
         if preview:
             shutil.copy2(preview, staged / metadata['screenshot'])
-        if destination.exists():
-            _publish_existing(staged, destination, relative_paths, temporary / 'backup')
+        if dummy:
+            dummy_path = staged_root / dummy[0]
+            dummy_path.parent.mkdir(parents=True)
+            dummy_path.write_text(dummy[1], encoding='utf-8')
+        if destination.exists() or dummy:
+            publication = [Path(folder_name) / relative for relative in relative_paths]
+            if dummy:
+                publication.append(dummy[0])
+            _publish_existing(staged_root, parent, publication, temporary / 'backup')
         else:
             os.replace(staged, destination)
     except RecoveryRequiredError:
@@ -253,4 +344,4 @@ def export_mod_folder(parent_directory, folder_name, asset, values, preview_path
     finally:
         if not keep_backup:
             shutil.rmtree(temporary)
-    return destination / asset.relative_path
+    return destination / (asset.relative_path if asset else 'modinfo.ini')

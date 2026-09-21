@@ -21,12 +21,12 @@ class ModFolderTests(unittest.TestCase):
         self.values = dict(name='Variant A', version='v1', author='Tester',
                            category=self.asset.category, description='Example')
 
-    def export(self, folder='Variant A', callback=None, preview=''):
+    def export(self, folder='Variant A', callback=None, preview='', **options):
         def write_mesh(path):
             Path(path).write_bytes(b'MESH test output')
             return True
         return package.export_mod_folder(self.root, folder, self.asset, self.values,
-                                         preview, callback or write_mesh)
+                                         preview, callback or write_mesh, **options)
 
     def test_routes_character_costume_and_slot_without_repadding(self):
         self.assertEqual(self.asset.relative_path.as_posix(),
@@ -76,7 +76,7 @@ class ModFolderTests(unittest.TestCase):
         self.assertIn('category=!Characters > Yasmine\n', text)
 
     def test_ini_rejects_newline_injection(self):
-        for key in ('name', 'author', 'description'):
+        for key in ('name', 'author', 'addonfor', 'nameasbundle'):
             with self.subTest(key=key), self.assertRaises(ValueError):
                 package.render_modinfo(dict(self.values, **{key: 'a\nscreenshot=elsewhere'}))
 
@@ -172,8 +172,129 @@ class ModFolderTests(unittest.TestCase):
         recovery = list(self.root.glob('.re-mesh-export-*/backup'))
         self.assertEqual(len(recovery), 1)
         self.assertIn(str(recovery[0]), str(raised.exception))
-        self.assertEqual((recovery[0] / self.asset.relative_path).read_bytes(), previous_mesh)
-        self.assertEqual((recovery[0] / 'modinfo.ini').read_bytes(), previous_info)
+        self.assertEqual((recovery[0] / 'Variant A' / self.asset.relative_path).read_bytes(), previous_mesh)
+        self.assertEqual((recovery[0] / 'Variant A/modinfo.ini').read_bytes(), previous_info)
+
+    def test_multiple_categories_and_description_linebreaks(self):
+        self.values.update(category=['!Characters > Ingrid', 'Colours', 'Hair', 'Colours'],
+                           description='First line\r\nSecond line\nname=not a new field')
+        self.export()
+        info_path = self.root / 'Variant A/modinfo.ini'
+        info = package.read_modinfo(info_path)
+        self.assertEqual(info['categories'], ['!Characters > Ingrid', 'Colours', 'Hair'])
+        self.assertEqual(info['name'], 'Variant A')
+        self.assertEqual(info['description'], r'First line\nSecond line\nname=not a new field')
+        self.assertEqual(package.categories_from_text(' Colours; Hair ;Colours '), ['Colours', 'Hair'])
+        text = package.render_modinfo(self.values, 'category=Old\nCategory=Old2\n')
+        self.assertNotIn('Old', text)
+        self.assertEqual(text.count('category='), 3)
+
+    def test_shared_bundle_and_standalone_switch(self):
+        self.values.update(nameasbundle='Hair Choices', addonfor='', dummymod='')
+        self.export(folder='Hair A')
+        self.values['name'] = 'Variant B'
+        self.export(folder='Hair B')
+        for folder in ('Hair A', 'Hair B'):
+            self.assertEqual(package.read_modinfo(self.root / folder / 'modinfo.ini')['nameasbundle'], 'Hair Choices')
+        self.values['nameasbundle'] = ''
+        self.export(folder='Hair B')
+        self.assertNotIn('nameasbundle', package.read_modinfo(self.root / 'Hair B/modinfo.ini'))
+        self.assertTrue((self.root / 'Hair A/modinfo.ini').exists())
+
+    def test_create_parent_menu_and_reuse_it_for_variants(self):
+        self.values.update(addonfor='Character Choices', nameasbundle='', dummymod='')
+        self.export(create_dummy_parent=True, parent_folder_name='000 Menu',
+                    parent_categories='!Characters > Multiple; Colours')
+        parent = self.root / '000 Menu/modinfo.ini'
+        info = package.read_modinfo(parent)
+        self.assertEqual(info['name'], 'Character Choices')
+        self.assertEqual(info['dummymod'], 'True')
+        self.assertEqual(info['categories'], ['!Characters > Multiple', 'Colours'])
+        self.assertFalse((parent.parent / 'natives').exists())
+        parent.write_text(parent.read_text() + 'description=Keep parent description\n')
+        before = parent.read_bytes()
+        self.values['name'] = 'Variant B'
+        self.export(folder='Variant B', create_dummy_parent=True, parent_folder_name='000 Menu')
+        self.assertEqual(parent.read_bytes(), before)
+        self.assertEqual(package.read_modinfo(self.root / 'Variant B/modinfo.ini')['addonfor'], info['name'])
+
+    def test_nested_dummy_menus_and_leaf_options(self):
+        for folder, name, parent_name in (('000 Root', 'Character Pack', ''),
+                                         ('030 Hair', 'Hair Variations', 'Character Pack')):
+            result = package.export_mod_folder(self.root, folder, None,
+                dict(name=name, addonfor=parent_name, dummymod='True'), '', None)
+            self.assertEqual(result.name, 'modinfo.ini')
+            self.assertFalse((result.parent / 'natives').exists())
+        self.values['addonfor'] = 'Hair Variations'
+        self.export(folder='031 Braid')
+        self.assertEqual(package.read_modinfo(self.root / '030 Hair/modinfo.ini')['addonfor'], 'Character Pack')
+        self.assertEqual(package.read_modinfo(self.root / '031 Braid/modinfo.ini')['addonfor'], 'Hair Variations')
+
+    def test_dummy_menu_does_not_replace_real_mesh_mod(self):
+        self.export()
+        ini = self.root / 'Variant A/modinfo.ini'
+        before = ini.read_bytes()
+        with self.assertRaises(ValueError):
+            package.export_mod_folder(self.root, 'Variant A', None,
+                                      dict(name='Menu', dummymod='True'), '', None)
+        self.assertEqual(ini.read_bytes(), before)
+
+    def test_parent_name_and_folder_collisions_fail_before_export(self):
+        self.values.update(addonfor='Variant A')
+        with self.assertRaises(ValueError):
+            self.export(create_dummy_parent=True)
+        self.values['addonfor'] = 'Parent'
+        with self.assertRaises(ValueError):
+            self.export(create_dummy_parent=True, parent_folder_name='Variant A')
+        root = self.root / '000 Other'
+        root.mkdir()
+        (root / 'modinfo.ini').write_text('name=Other\nDummyMod=True\n')
+        with self.assertRaises(ValueError):
+            self.export(create_dummy_parent=True, parent_folder_name=root.name)
+        self.assertFalse((self.root / 'Variant A').exists())
+
+    def test_failed_mesh_creates_no_parent_menu(self):
+        self.values['addonfor'] = 'Parent'
+        with self.assertRaises(ValueError):
+            self.export(callback=lambda path: False, create_dummy_parent=True)
+        self.assertEqual(list(self.root.iterdir()), [])
+
+    def test_parent_install_failure_rolls_back_existing_variant(self):
+        result = self.export()
+        previous = result.read_bytes()
+        old_info = (self.root / 'Variant A/modinfo.ini').read_bytes()
+        self.values.update(addonfor='Parent', version='v2')
+        real_replace = package.os.replace
+        def fail_parent(source, target):
+            if Path(target).parent.name == '00 Parent':
+                raise OSError('locked parent')
+            return real_replace(source, target)
+        with patch.object(package.os, 'replace', side_effect=fail_parent), self.assertRaises(OSError):
+            self.export(create_dummy_parent=True)
+        self.assertEqual(result.read_bytes(), previous)
+        self.assertEqual((self.root / 'Variant A/modinfo.ini').read_bytes(), old_info)
+        self.assertFalse((self.root / '00 Parent').exists())
+
+    def test_parent_install_failure_removes_new_variant(self):
+        self.values['addonfor'] = 'Parent'
+        real_replace = package.os.replace
+        def fail_parent(source, target):
+            if Path(target).parent.name == '00 Parent':
+                raise OSError('locked parent')
+            return real_replace(source, target)
+        with patch.object(package.os, 'replace', side_effect=fail_parent), self.assertRaises(OSError):
+            self.export(create_dummy_parent=True)
+        self.assertEqual(list(self.root.iterdir()), [])
+
+    def test_bundle_fields_survive_settings_reload(self):
+        path = self.root / 'settings.json'
+        values = dict(bundle_name='Variants', parent_mod_name='Character Menu',
+                      create_dummy_parent=True, parent_folder_name='000 Menu',
+                      parent_categories='!Characters > Multiple; Colours',
+                      extra_categories='Hair; Colours', export_content='MENU')
+        package.save_defaults(path, values)
+        self.assertEqual(package.load_defaults(path), values)
+        self.assertNotIn('export_content', package.filter_defaults(dict(export_content='invalid')))
 
     def test_defaults_survive_reload_and_ignore_unknown_keys(self):
         path = self.root / 'config/defaults.json'

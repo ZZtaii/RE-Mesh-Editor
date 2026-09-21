@@ -127,6 +127,56 @@ def main():
         assert direct.read_bytes() == original.read_bytes()
         assert not (root / 'modinfo.ini').exists()
         report.append(dict(test='direct_export_unchanged', byte_identical=True))
+
+        # Build the root -> hair submenu -> real mesh options structure.
+        root_menu = dict(export_content='MENU', targetCollection='', parent_directory=str(root),
+                         folder_name='000 Character Menu', mod_name='Character Options', mod_author='Test Author',
+                         mod_category='!Characters > Multiple', extra_categories='Colours',
+                         mod_description=r'Choose an option\nHair and outfit menus')
+        before_objects = sorted(bpy.data.objects.keys())
+        assert bpy.ops.re_mesh.export_sf6_mod_folder('EXEC_DEFAULT', **root_menu) == {'FINISHED'}
+        assert sorted(bpy.data.objects.keys()) == before_objects
+        root_info = package.read_modinfo(root / '000 Character Menu/modinfo.ini')
+        assert root_info['dummymod'] == 'True'
+        assert root_info['categories'] == ['!Characters > Multiple', 'Colours']
+        assert root_info['description'] == r'Choose an option\nHair and outfit menus'
+        assert not (root / '000 Character Menu/natives').exists()
+        submenu = dict(root_menu, folder_name='030 Hair Menu', mod_name='Hair Options',
+                       parent_mod_name='Character Options', create_dummy_parent=True,
+                       parent_folder_name='000 Character Menu')
+        original_root = (root / '000 Character Menu/modinfo.ini').read_bytes()
+        assert bpy.ops.re_mesh.export_sf6_mod_folder('EXEC_DEFAULT', **submenu) == {'FINISHED'}
+        assert (root / '000 Character Menu/modinfo.ini').read_bytes() == original_root
+        assert package.read_modinfo(root / '030 Hair Menu/modinfo.ini')['addonfor'] == 'Character Options'
+        report.append(dict(test='menu_only_root_and_nested_submenu', passed=True))
+
+        bundled = dict(settings, folder_name='031 Option A', mod_name='Option A',
+                       bundle_name='Hair Variants', parent_mod_name='Hair Options',
+                       create_dummy_parent=True, parent_folder_name='030 Hair Menu',
+                       extra_categories='Hair; Colours', mod_description='First\nSecond')
+        assert bpy.ops.re_mesh.export_sf6_mod_folder('EXEC_DEFAULT', **bundled) == {'FINISHED'}
+        info = package.read_modinfo(root / '031 Option A/modinfo.ini')
+        assert info['addonfor'] == 'Hair Options'
+        assert info['nameasbundle'] == 'Hair Variants'
+        assert info['categories'] == ['!Characters > Yasmine', 'Hair', 'Colours']
+        assert info['description'] == r'First\nSecond'
+        assert 'dummymod' not in info
+        assert (root / '031 Option A' / asset.relative_path).read_bytes() == original.read_bytes()
+        defaults = ui.load_operator_defaults(bpy.context, collection)
+        for key in ('bundle_name', 'parent_mod_name', 'parent_folder_name', 'extra_categories', 'create_dummy_parent'):
+            assert defaults[key] == bundled[key]
+        report.append(dict(test='real_mesh_bundle_link_and_persisted_fields', byte_identical=True))
+
+        # A second option can create a new parent automatically.
+        automatic = dict(bundled, folder_name='032 Option B', mod_name='Option B',
+                         parent_mod_name='Other Options', parent_folder_name='', bundle_name='')
+        assert bpy.ops.re_mesh.export_sf6_mod_folder('EXEC_DEFAULT', **automatic) == {'FINISHED'}
+        assert package.read_modinfo(root / '00 Other Options/modinfo.ini')['name'] == 'Other Options'
+        assert not (root / '00 Other Options/natives').exists()
+        existing_defaults = ui.existing_mod_defaults(collection, bpy.context)
+        assert existing_defaults['parent_mod_name'] == 'Other Options'
+        assert existing_defaults['extra_categories'] == 'Hair; Colours'
+        report.append(dict(test='auto_parent_creation_and_existing_ini_defaults', passed=True))
     if args.report_json:
         args.report_json.write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
     print('FOLDER_EXPORT_TESTS_PASSED ' + json.dumps(report), flush=True)
