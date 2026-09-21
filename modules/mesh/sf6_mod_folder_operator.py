@@ -69,7 +69,38 @@ def load_operator_defaults(context, collection):
     return package.filter_defaults(values)
 
 
+def update_destination_notice(self, context):
+    self.destination_notice = ''
+    if self.export_content != 'MESH' or not self.parent_directory.strip() or not self.folder_name:
+        return
+    collection = bpy.data.collections.get(self.targetCollection)
+    if collection is None:
+        return
+    try:
+        asset = package.asset_from_collection(collection)
+        package.validate_folder_name(self.folder_name)
+    except ValueError:
+        return
+    try:
+        conflicts = package.destination_conflicts(bpy.path.abspath(self.parent_directory), self.folder_name, asset)
+    except (OSError, ValueError):
+        self.destination_notice = 'Existing files could not be checked.\nCheck the destination before exporting.'
+        return
+    if conflicts:
+        names = [f'{package.CHARACTERS.get(character, "esf" + character)} C{int(costume)}'
+                 for character, costume in conflicts[:3]]
+        existing = ', '.join(names)
+        if len(conflicts) > 3:
+            existing += f' (+{len(conflicts) - 3} more)'
+        self.destination_notice = '\n'.join((
+            'This mod folder already contains another character or costume:', existing,
+            f'Exporting: {asset.character_name} C{int(asset.costume)} / {asset.slot_name}.',
+            'Keep this folder to combine them, or choose a new Mod Folder Name.',
+            'Export also updates this folder\'s mod information.'))
+
+
 def update_collection(self, context):
+    update_destination_notice(self, context)
     collection = bpy.data.collections.get(self.targetCollection)
     if collection is None:
         return
@@ -119,12 +150,12 @@ class ExportSF6ModFolder(bpy.types.Operator):
     bl_description = 'Export an SF6 mesh mod or create a Fluffy bundle menu, with remembered mod information'
 
     targetCollection: StringProperty(name='Mesh Collection', update=update_collection)
-    export_content: EnumProperty(name='Export Content', default='MESH', items=(
+    export_content: EnumProperty(name='Export Content', default='MESH', update=update_destination_notice, items=(
         ('MESH', 'Mesh Mod', 'Export the selected mesh and its mod information'),
         ('MENU', 'Menu Only', 'Create a DummyMod menu without exporting a mesh; use Parent Mod for nested menus')))
-    parent_directory: StringProperty(name='Parent Directory', subtype='DIR_PATH',
+    parent_directory: StringProperty(name='Parent Directory', subtype='DIR_PATH', update=update_destination_notice,
         description='The mod folder will be created inside this directory, such as Fluffy Games/SF6/Mods')
-    folder_name: StringProperty(name='Mod Folder Name')
+    folder_name: StringProperty(name='Mod Folder Name', update=update_destination_notice)
     mod_name: StringProperty(name='Display Name', description='Name shown in Fluffy Mod Manager')
     mod_version: StringProperty(name='Version', default='v1')
     mod_author: StringProperty(name='Author')
@@ -147,6 +178,7 @@ class ExportSF6ModFolder(bpy.types.Operator):
         description='Optional PNG or JPEG copied into the mod folder')
     last_character: StringProperty(options={'HIDDEN'})
     destination: StringProperty(name='Destination', get=destination_preview)
+    destination_notice: StringProperty(options={'HIDDEN', 'SKIP_SAVE'})
     exportBlendShapes: BoolProperty(name='SF6 Preserve Source Data', default=True)
     rotate90: BoolProperty(name='Convert Z Up to Y Up', default=True)
 
@@ -167,6 +199,7 @@ class ExportSF6ModFolder(bpy.types.Operator):
                     self.mod_name = suggested
             except ValueError:
                 pass
+        update_destination_notice(self, context)
         return context.window_manager.invoke_props_dialog(self, width=650, confirm_text='Export Mod Folder')
 
     def draw(self, context):
@@ -187,6 +220,10 @@ class ExportSF6ModFolder(bpy.types.Operator):
         layout.prop(self, 'parent_directory')
         layout.prop(self, 'folder_name')
         layout.prop(self, 'destination')
+        if self.destination_notice:
+            notice = layout.box()
+            for index, line in enumerate(self.destination_notice.splitlines()):
+                notice.label(text=line, icon='INFO' if index == 0 else 'NONE')
         layout.separator()
         for name in ('mod_name', 'mod_version', 'mod_author', 'mod_category', 'extra_categories', 'mod_description', 'preview_path'):
             layout.prop(self, name)

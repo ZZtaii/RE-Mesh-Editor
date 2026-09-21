@@ -93,6 +93,46 @@ def validate_folder_name(name):
     return name
 
 
+def destination_conflicts(parent, folder_name, asset):
+    """Find other character/costume payloads, without reading or changing files."""
+    validate_folder_name(folder_name)
+    mod_root = Path(parent) / folder_name
+    model_root = _contained_path(mod_root, Path('natives/stm/product/model/esf'))
+    if not model_root.exists():
+        return []
+
+    def scan_error(error):
+        raise error
+
+    conflicts = set()
+    for character_dir in model_root.iterdir():
+        match = re.fullmatch(r'esf(\d{3})', character_dir.name, re.IGNORECASE)
+        if not match or not character_dir.is_dir():
+            continue
+        _contained_path(mod_root, character_dir.relative_to(mod_root))
+        character = match[1]
+        for costume_dir in character_dir.iterdir():
+            costume = costume_dir.name
+            if (not re.fullmatch(r'\d{3}', costume) or not costume_dir.is_dir() or
+                    (character, costume) == (asset.character, asset.costume)):
+                continue
+            _contained_path(mod_root, costume_dir.relative_to(mod_root))
+            # Empty directories aren't a mod payload. Include textures/MDFs too.
+            visited = set()
+            for directory, subdirs, files in os.walk(costume_dir, onerror=scan_error, followlinks=False):
+                resolved = Path(directory).resolve()
+                if resolved in visited:
+                    subdirs.clear()
+                    continue
+                visited.add(resolved)
+                for name in subdirs:
+                    _contained_path(mod_root, Path(directory, name).relative_to(mod_root))
+                if files:
+                    conflicts.add((character, costume))
+                    break
+    return sorted(conflicts)
+
+
 def _field_value(value):
     value = str(value)
     if any(ord(character) < 32 for character in value):

@@ -296,6 +296,42 @@ class ModFolderTests(unittest.TestCase):
         self.assertEqual(package.load_defaults(path), values)
         self.assertNotIn('export_content', package.filter_defaults(dict(export_content='invalid')))
 
+    def test_destination_notice_ignores_empty_and_unrelated_folders(self):
+        self.assertEqual(package.destination_conflicts(self.root, 'New', self.asset), [])
+        root = self.root / 'Named Ingrid C1'
+        empty = root / 'natives/stm/product/model/esf/esf032/001/02'
+        empty.mkdir(parents=True)
+        (root / 'modinfo.ini').write_text('name=Ingrid C1\n')
+        (root / 'readme.txt').write_text('unrelated')
+        self.assertEqual(package.destination_conflicts(self.root, root.name, self.asset), [])
+
+    def test_destination_notice_allows_same_costume_other_parts(self):
+        self.export()
+        hair = package.SF6Asset('033', '002', '02')
+        self.assertEqual(package.destination_conflicts(self.root, 'Variant A', hair), [])
+
+    def test_destination_notice_finds_other_characters_and_costumes(self):
+        for asset in (self.asset, package.SF6Asset('033', '001', '01'),
+                      package.SF6Asset('032', '001', '02'), package.SF6Asset('032', '001', '00')):
+            path = self.root / 'Combined' / asset.relative_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b'payload')
+        self.assertEqual(package.destination_conflicts(self.root, 'Combined', self.asset),
+                         [('032', '001'), ('033', '001')])
+
+    def test_destination_notice_includes_textures_and_ignores_siblings(self):
+        path = self.root / 'Combined/natives/stm/product/model/esf/esf099/003/02/texture/hair.tex.28'
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b'texture')
+        self.assertEqual(package.destination_conflicts(self.root, 'Combined', self.asset), [('099', '003')])
+        self.assertEqual(package.destination_conflicts(self.root, 'Another Option', self.asset), [])
+
+    def test_destination_notice_reports_scan_failure(self):
+        self.export()
+        with patch.object(Path, 'iterdir', side_effect=PermissionError('cannot inspect')):
+            with self.assertRaises(PermissionError):
+                package.destination_conflicts(self.root, 'Variant A', self.asset)
+
     def test_defaults_survive_reload_and_ignore_unknown_keys(self):
         path = self.root / 'config/defaults.json'
         settings = dict(parent_directory=str(self.root), folder_name='Variant A',

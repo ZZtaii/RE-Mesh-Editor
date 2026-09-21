@@ -12,7 +12,6 @@ bl_info = {
 	"category": "Import-Export"}
 
 import bpy
-from . import addon_updater_ops
 from datetime import datetime
 import os
 from bpy_extras.io_utils import ExportHelper,ImportHelper
@@ -406,7 +405,7 @@ class REMeshPreferences(AddonPreferences):
 	)
 	chunkPathList_items: CollectionProperty(type=ChunkPathPropertyGroup)
 	chunkPathList_index: IntProperty(name="")
-	# addon updater preferences
+	# Legacy saved preferences; this fork uses manual release downloads.
 	auto_check_update: bpy.props.BoolProperty(
 	    name = "Auto-check for Update",
 	    description = "If enabled, auto-check for updates using an interval",
@@ -667,7 +666,10 @@ class REMeshPreferences(AddonPreferences):
 		row = layout.row(align=True)
 		row.operator("re_mesh.chunk_path_list_reorder_item", text="Move Up").direction = 'UP'
 		row.operator("re_mesh.chunk_path_list_reorder_item", text="Move Down").direction = 'DOWN'
-		addon_updater_ops.update_settings_ui(self,context)
+		box = layout.box()
+		box.label(text="SF6 Fork Updates")
+		box.operator("wm.url_open", text="Open Fork Releases", icon='URL').url = "https://github.com/ZZtaii/RE-Mesh-Editor/releases"
+		box.label(text="Download and install the release ZIP, then restart Blender.")
 class ImportREMesh(Operator, ImportHelper):
 	'''Import RE Engine Mesh File'''
 	bl_idname = "re_mesh.importfile"
@@ -1812,7 +1814,6 @@ def re_mesh_editor_export(self, context):
 	self.layout.menu("EXPORT_MT_re_mesh_editor",icon = "MOD_LINEART")
 
 def register():
-	addon_updater_ops.register(bl_info)
 	for classEntry in classes:
 		bpy.utils.register_class(classEntry)
 		
@@ -1852,7 +1853,6 @@ def register():
 	
 def unregister():
 	del bpy.types.WindowManager.enableModFileTracking
-	addon_updater_ops.unregister()
 	for classEntry in classes:
 		bpy.utils.unregister_class(classEntry)
 		
