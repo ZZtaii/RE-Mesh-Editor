@@ -67,6 +67,19 @@ def main():
 
     with tempfile.TemporaryDirectory(prefix="re-mesh-sf6-tests-") as temp:
         temp = Path(temp)
+
+        def rejected_export(name, options, message):
+            sentinel = temp / "rejected.mesh.230110883"
+            sentinel.write_bytes(b"UNCHANGED")
+            try:
+                mesh_io.exportREMeshFile(str(sentinel), options)
+            except ValueError as error:
+                assert message in str(error), str(error)
+                assert sentinel.read_bytes() == b"UNCHANGED"
+            else:
+                raise AssertionError("Unsupported edit was silently exported: " + name)
+            record(test=name, destination_preserved=True)
+
         for source_path in fixtures:
             collection, options = import_mesh(source_path)
             original = source_path.read_bytes()
@@ -76,9 +89,50 @@ def main():
             record(test="exact_roundtrip", file=source_path.name, bytes=len(original),
                    sha256=hashlib.sha256(original).hexdigest())
 
+            secondary_uv_object = next((o for o in collection.all_objects
+                                        if o.type == "MESH" and len(o.data.uv_layers) > 1), None)
+            if secondary_uv_object:
+                uv = secondary_uv_object.data.uv_layers[1].data[0]
+                saved_uv = uv.uv.copy()
+                uv.uv.x += 0.125
+                rejected_export("secondary_uv_edit_rejected", options, "UV edits")
+                uv.uv = saved_uv
+                mesh_io.exportREMeshFile(str(output), options)
+                assert output.read_bytes() == original
+
             if source_path.name == "esf033_002_01.mesh.230110883":
                 jersey = next(o for o in collection.all_objects
                               if o.type == "MESH" and "Shirts" in o.name)
+
+                slot = jersey.material_slots[0]
+                original_material = slot.material
+                slot.link = "OBJECT"
+                override_material = bpy.data.materials.new("SourceTestOverride")
+                slot.material = override_material
+                rejected_export("object_material_override_rejected", options, "Material reassignment")
+                slot.material = original_material
+                slot.link = "DATA"
+                bpy.data.materials.remove(override_material)
+
+                jersey.data.polygons[0].material_index = 1
+                rejected_export("face_material_reassignment_rejected", options, "Face material")
+                jersey.data.polygons[0].material_index = 0
+
+                added_uv = jersey.data.uv_layers.new(name="SourceTestAddedUV")
+                rejected_export("added_uv_layer_rejected", options, "UV layers")
+                jersey.data.uv_layers.remove(added_uv)
+                uv = jersey.data.uv_layers[0].data[0]
+                saved_uv = uv.uv.copy()
+                uv.uv.x += 0.125
+                rejected_export("primary_uv_edit_rejected", options, "UV edits")
+                uv.uv = saved_uv
+
+                del collection["SF6PreserveSource"]
+                rejected_export("missing_source_marker_rejected", options, "requires an original mesh")
+                collection["SF6PreserveSource"] = True
+                mesh_io.exportREMeshFile(str(output), options)
+                assert output.read_bytes() == original
+
                 keys = jersey.data.shape_keys.key_blocks
                 vertex = 100
                 saved = [key.data[vertex].co.copy() for key in keys]
@@ -160,6 +214,31 @@ def main():
                 mesh_io.exportREMeshFile(str(output), options)
                 assert output.read_bytes() == before_save
                 record(test="save_reopen_export", byte_identical=True)
+
+        sentinel = bpy.data.objects.new("ImportFailureSentinel", None)
+        bpy.context.scene.collection.objects.link(sentinel)
+        scene_before = {
+            kind: sorted(item.name for item in getattr(bpy.data, kind))
+            for kind in ("objects", "collections", "meshes", "materials", "armatures")
+        }
+        invalid_path = temp / "invalid.mesh.230110883"
+        invalid_path.write_bytes(b"not a mesh")
+        missing_path = temp / "missing.mesh.230110883"
+        for path in (invalid_path, missing_path):
+            for preserve_source in (False, True):
+                import_options = dict(IMPORT_OPTIONS, importBlendShapes=preserve_source)
+                try:
+                    mesh_io.importREMeshFile(str(path), import_options)
+                except Exception:
+                    scene_after = {
+                        kind: sorted(item.name for item in getattr(bpy.data, kind))
+                        for kind in scene_before
+                    }
+                    assert scene_after == scene_before, "Failed import cleared existing scene data"
+                else:
+                    raise AssertionError("Invalid mesh import unexpectedly succeeded")
+                record(test="failed_import_preserves_scene", file=path.name,
+                       preserve_source=preserve_source, passed=True)
 
     if args.report_json:
         args.report_json.parent.mkdir(parents=True, exist_ok=True)

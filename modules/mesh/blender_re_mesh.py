@@ -652,6 +652,27 @@ def importREMeshFile(filePath,options):
 	warningList = []
 	errorList = []
 	
+	print("\033[96m__________________________________\nRE Mesh import started.\033[0m")
+	# Validate source data before Clear Scene can remove the current project.
+	sf6Source = None
+	if sf6SourceMode:
+		from .sf6_source import SourceMesh
+		with open(filePath, 'rb') as sourceFile:
+			sf6Source = SourceMesh(sourceFile.read())
+	if options["importAllLODs"]:
+		lodTarget = None
+	else:
+		lodTarget = 0
+	reMesh = readREMesh(filePath,lodTarget)
+	meshFileName = os.path.splitext(os.path.split(filePath)[1])[0]
+	meshParseStartTime = time.time()
+	parsedMesh = ParsedREMesh()
+	parsedMesh.ParseREMesh(reMesh)
+	print("Parsed mesh.")
+	meshParseEndTime = time.time()
+	meshParseTime = meshParseEndTime - meshParseStartTime
+	print(f"Mesh parsing took {timeFormat%(meshParseTime * 1000)} ms.")
+
 	if options["clearScene"]:
 		for collection in bpy.data.collections:
 			for obj in collection.objects:
@@ -673,20 +694,6 @@ def importREMeshFile(filePath,options):
 		    if not img.users:
 		        bpy.data.images.remove(img)
 
-	print("\033[96m__________________________________\nRE Mesh import started.\033[0m")
-	if options["importAllLODs"]:
-		lodTarget = None
-	else:
-		lodTarget = 0
-	reMesh = readREMesh(filePath,lodTarget)
-	meshFileName = os.path.splitext(os.path.split(filePath)[1])[0]
-	meshParseStartTime = time.time()
-	parsedMesh = ParsedREMesh()
-	parsedMesh.ParseREMesh(reMesh)
-	print("Parsed mesh.")
-	meshParseEndTime = time.time()
-	meshParseTime =  meshParseEndTime - meshParseStartTime
-	print(f"Mesh parsing took {timeFormat%(meshParseTime * 1000)} ms.")
 	armatureObj = None
 	parentCollection = None#Collection for grouping mesh and mdf
 	if options["createCollections"]:
@@ -739,7 +746,7 @@ def importREMeshFile(filePath,options):
 	
 	if sf6SourceMode:
 		from .sf6_source import attach_source
-		attach_source(filePath, meshCollection, meshOffsetDict, options['rotate90'])
+		attach_source(filePath, meshCollection, meshOffsetDict, options['rotate90'], source=sf6Source)
 	meshOffsetDict.clear()
 	if options["loadMaterials"] or options["loadMDFData"]:
 		#print(filePath.split(".mesh")[1])
@@ -965,9 +972,12 @@ def splitSharpEdges():
 
 def exportREMeshFile(filePath,options):
 	sourceCollection = bpy.data.collections.get(options.get('targetCollection', ''))
-	if sourceCollection is not None and sourceCollection.get('SF6PreserveSource') and options.get('exportBlendShapes', True):
+	isSF6Source = sourceCollection is not None and sourceCollection.get('SF6PreserveSource')
+	if options.get('exportBlendShapes', True) and (filePath.endswith('.mesh.230110883') or isSF6Source):
 		if not filePath.endswith('.mesh.230110883'):
 			raise ValueError('SF6 source mode can only export mesh.230110883')
+		if not isSF6Source:
+			raise ValueError('SF6 source preservation requires an original mesh imported with Preserve Source + Shape Keys. Re-import the original mesh, or explicitly disable Preserve Source Data to use the ordinary exporter.')
 		from .sf6_source import export_source
 		export_source(filePath, sourceCollection, options)
 		return True
