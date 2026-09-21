@@ -314,7 +314,12 @@ def export_source(filepath, collection, options):
         if obj.type != 'MESH' or obj.get('~TYPE'):
             continue
         if META not in obj or obj.get('SF6SourceSHA256') != collection['SF6SourceSHA256']:
-            raise ValueError('New/replacement objects require a rebuilt exporter: '+obj.name)
+            raise ValueError(
+                'Cannot preserve new/replacement object: '+obj.name+'. '
+                'Its original source identity is missing or mismatched. '
+                'Restore the original imported object for preservation, or disable '
+                '"SF6: Preserve Source Data" for this mesh to use ordinary export '
+                '(original SF6 deformation data is not preserved).')
         part = json.loads(obj[META])
         if part not in src.parts:
             raise ValueError('Source metadata was modified: '+obj.name)

@@ -1,6 +1,7 @@
 #Author: NSA Cloud
 import bpy
 import os
+import textwrap
 from bpy.types import Operator
 
 from bpy.props import (StringProperty,
@@ -357,6 +358,7 @@ class WM_OT_REBatchExporter(Operator):
 			self.report({'WARNING'}, "No files are enabled for batch export.")
 			return {'CANCELLED'}
 		failCount = 0
+		meshFailures = []
 		for index,exportItem in enumerate(exportItemList):
 			if exportItem.invalid:
 				print(f"Skipping {exportItem.name} ({index+1}/{len(exportItemList)}) due to an invalid export path: {exportItem.path}")
@@ -388,9 +390,11 @@ class WM_OT_REBatchExporter(Operator):
 						)
 					if 'FINISHED' not in result:
 						failCount += 1
+						meshFailures.append(f"{exportItem.name}: Mesh export was cancelled. See the system console for details.")
 				except Exception as err:
 					print(f"Mesh Export Failed: {str(err)}")
 					failCount += 1
+					meshFailures.append(f"{exportItem.name}: {str(err).strip()}")
 			elif exportItem.exportType == "MDF":
 				try:
 					bpy.ops.re_mdf.exportfile(
@@ -462,9 +466,14 @@ class WM_OT_REBatchExporter(Operator):
 				failCount += 1
 		if failCount != 0:
 			message = f"{failCount}/{len(exportItemList)} files failed to export. See the system console for details."
+			if meshFailures:
+				message += " First mesh failure: " + meshFailures[0]
 			self.report({'WARNING'}, message)
 			if not bpy.app.background:
-				showErrorMessageBox(message)
+				def draw_failure(popup, context):
+					for line in textwrap.wrap(message, width=88):
+						popup.layout.label(text=line)
+				context.window_manager.popup_menu(draw_failure, title="Batch Export Failed", icon='ERROR')
 			return {'CANCELLED'}
 		else:
 			self.report({"INFO"},"Batch export finished successfully.")
@@ -574,6 +583,15 @@ class WM_OT_REBatchExporter(Operator):
 				if item.exportType == "MESH":
 					box.prop(item, "exportAllLODs")
 					box.prop(item, "exportBlendShapes")
+					collection = bpy.data.collections.get(item.name)
+					if item.path.endswith('.mesh.230110883') or (collection and collection.get('SF6PreserveSource')):
+						if item.exportBlendShapes:
+							box.label(text="Preserves the original SF6 mesh layout.", icon='INFO')
+							box.label(text="New/replaced meshes need ordinary export.")
+							box.label(text="Disable preservation to rebuild this mesh.")
+						else:
+							box.label(text="Ordinary export rebuilds this mesh.", icon='INFO')
+							box.label(text="Original SF6 deformation data is not kept.")
 					box.prop(item,"autoSolveRepeatedUVs")
 					box.prop(item,"preserveSharpEdges")
 					box.prop(item, "rotate90")
