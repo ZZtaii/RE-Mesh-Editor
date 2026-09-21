@@ -215,6 +215,7 @@ def attach_source(filepath, collection, objects, rotate=True, source=None):
         txt.from_string('\n'.join(encoded[i:i+1024] for i in range(0,len(encoded),1024)))
     txt.use_fake_user = True
     collection[SOURCE] = txt.name
+    collection['SF6SourceFilename'] = os.path.basename(filepath)
     collection['SF6SourceSHA256'] = source_hash
     collection['SF6SourceRotate'] = rotate
     collection['SF6PreserveSource'] = True

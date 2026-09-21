@@ -24,6 +24,7 @@ from .modules.blender_utils import operator_exists
 #mesh
 from .modules.mesh.file_re_mesh import meshFileVersionToGameNameDict
 from .modules.mesh.blender_re_mesh import importREMeshFile,exportREMeshFile
+from .modules.mesh.sf6_mod_folder_operator import ExportSF6ModFolder
 from .modules.mesh.re_mesh_propertyGroups import (
 	ExporterNodePropertyGroup,
 	MESH_UL_REExporterList
@@ -1569,6 +1570,7 @@ classes = [
 	
 	ImportREMesh,
 	ExportREMesh,
+	ExportSF6ModFolder,
 	WM_OT_DeleteLoose,
 	WM_OT_RenameMeshToREFormat,
 	WM_OT_RemoveZeroWeightVertexGroups,
@@ -1788,6 +1790,7 @@ class EXPORT_MT_re_mesh_editor(bpy.types.Menu):
         layout = self.layout
         
         layout.operator(ExportREMesh.bl_idname, text="RE Mesh (.mesh.x) (Model)",icon = "MESH_DATA")
+        layout.operator(ExportSF6ModFolder.bl_idname, text="SF6 Fluffy Mod Folder",icon = "FILE_FOLDER")
         layout.operator(ExportREMDF.bl_idname, text="RE MDF (.mdf2.x) (Materials)",icon = "MATERIAL")
         layout.operator(ExportREFBXSkel.bl_idname, text="RE FBXSkel (.fbxskel.x) (Skeleton)",icon = "ARMATURE_DATA")
         layout.operator(ExportRESFur.bl_idname, text="RE SFur (.sfur.x) (Shell Fur)",icon = "CURVES_DATA")
