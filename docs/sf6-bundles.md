@@ -18,12 +18,17 @@ The examples use one character with two hairstyles, **Braid** and **Bangs**.
    filename. The exporter reads the character, costume and slot from it.
 2. Open the exporter and set **Parent Directory** to your Fluffy `Games\SF6\Mods`
    folder. Every export in these recipes goes straight into it.
-3. Fill in **Author** and **Version** once. The dialog remembers every field for
-   the next export, which is what makes these recipes short.
+3. Fill in **Author** and **Version** once. The dialog remembers the mod metadata
+   and grouping fields for the next export, which makes these recipes short.
 
 The mesh you select decides where the mod installs. Naming a folder "C2" does not
 turn a C1 mesh into costume 2. Slots are **00 Head, 01 Body, 02 Hair**, and costume
 folders keep three digits: `001`, not `01`.
+
+Prepare each edited mesh in Blender first. The planner shows example fields and
+menu layouts; it does not create hairstyles, export files, or inspect your Fluffy
+installation. Keep source-preservation edits within the limits described in the
+[README](../README.md#editing-a-mesh-while-preserving-the-original).
 
 ## Recipe A — one flat bundle
 
@@ -153,7 +158,9 @@ anything else in the folder alone.
 | The selected collection has no recognizable SF6 mesh filename. | The collection was not imported from an `esfNNN_CCC_SS.mesh` file. Re-import the original and edit that. |
 | Enter a folder name without leading/trailing spaces or a trailing dot. | Trim the folder name. It also cannot contain `\ / : * ? " < > \|`. |
 
-Entries that do not appear in Fluffy are usually a **Parent Mod** that matches no
-existing Display Name, or two entries sharing one Display Name. Both are checked
-for you by the planner. If Fluffy was already open when you exported, refresh its
-mod list.
+If an entry does not appear in Fluffy, check that **Parent Mod** matches an
+existing Display Name and that your entries have unique names. The planner warns
+about duplicate names in your plan and fills in its parent links for you; it
+cannot check mods already on your drive. If Fluffy was already open when you
+exported, refresh its mod list. The menu figures are illustrative, not screenshots
+of new exports tested in Fluffy.

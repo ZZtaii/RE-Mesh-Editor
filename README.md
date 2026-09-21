@@ -4,15 +4,15 @@
 
 A Blender addon for importing and exporting RE Engine `.mesh` and `.mdf2` (material) files natively, with no Noesis required.
 
-This is a fork of [RE Mesh Editor](https://github.com/NSACloud/RE-Mesh-Editor) by **NSA Cloud**, who has ended development of the original. Everything the original does still works here. The fork adds a Street Fighter 6 mod-making workflow on top of it: a mesh editing mode that keeps the original file's data intact, a one-click export straight into a Fluffy Mod Manager folder, and fixes for imports and exports that used to fail silently or take the scene down with them.
+This is a fork of [RE Mesh Editor](https://github.com/NSACloud/RE-Mesh-Editor) by **NSA Cloud**. It retains the base addon's tools and adds a Street Fighter 6 workflow: source-preserving mesh edits, export straight into a Fluffy Mod Manager folder, and import/export validation. The fork's testing focuses on SF6; it does not establish compatibility for every other RE Engine game.
 
 ### [Download the latest release](https://github.com/ZZtaii/RE-Mesh-Editor/releases/latest)
 
 Current release: **V0.66-SF6.3** · [Change log](#change-log) · [SF6 workflows](#street-fighter-6-workflows)
 
-> **Beta software.** The original is a beta release and so is this fork. Back up your work.
+> **V0.66-SF6.3 is the stable fork release.** Changes listed under **Unreleased** below are on `main` and are not yet in that release. Keep backups of your work.
 
-> **Blender 5.1 is currently bugged.** It has an issue that makes importing and exporting meshes extremely slow. Stay on Blender 5.0 or lower until it is fixed — see [the Blender issue](https://projects.blender.org/blender/blender/issues/155858) for details.
+> **Tested with Blender 4.5.3 LTS.** For newer versions, check [the upstream Blender performance report](https://projects.blender.org/blender/blender/issues/155858) and its current status.
 
 <img width="1888" height="945" alt="RE Mesh Editor in Blender" src="https://github.com/user-attachments/assets/3a072b6e-fa98-43d1-9fb0-34c2942c97a1" />
 
@@ -21,7 +21,7 @@ Current release: **V0.66-SF6.3** · [Change log](#change-log) · [SF6 workflows]
 ## What this fork adds
 
 ### SF6 source preservation
-Import an original SF6 mesh in a mode that remembers the file it came from, edit it, and export a file that keeps everything you did not touch — the original layout, LODs, normals, bounds and corrective shapes — byte for byte. This is what makes small edits safe: you are patching the original file rather than rebuilding it.
+Import an original SF6 mesh with its source data embedded in the project, then patch supported edits into that original file. Unedited round trips have passed byte-for-byte checks. The exporter retains unknown deformation data, original normals, tangents, bounds and untouched LODs; it does not regenerate them for a changed silhouette. Large geometry edits and automatic lower-LOD updates remain unvalidated.
 
 ### SF6 Fluffy Mod Folder export
 Export a finished mesh directly as an installable Fluffy Mod Manager folder, with the correct native game path and a `modinfo.ini` written for you. It also builds grouped mods: bundles that collect variants under one heading, and nested menus for larger packs.
@@ -53,7 +53,7 @@ A mesh file that fails to parse no longer wipes your scene first. Source-preserv
 
 If you are replacing an existing installation, save your work and restart Blender afterwards.
 
-**Updating:** reinstall from the [latest release](https://github.com/ZZtaii/RE-Mesh-Editor/releases/latest). Do not use the **Check for update** button in the addon preferences — it still points at the original repository and does not understand this fork's version tags, so it will offer you the wrong build.
+**Updating:** reinstall from the [latest fork release](https://github.com/ZZtaii/RE-Mesh-Editor/releases/latest), then restart Blender. Current `main` provides an **Open Fork Releases** button for this manual workflow. V0.66-SF6.3 and older builds still show the upstream updater; use the fork's release page instead of that updater.
 
 The addon's internal version still reads `0.66`, which is the upstream version this fork is based on. The `SF6.x` part of the release tag is the fork's own revision.
 
@@ -61,7 +61,7 @@ The addon's internal version still reads `0.66`, which is the upstream version t
 
 ## Street Fighter 6 workflows
 
-Both SF6 features work on Street Fighter 6 character meshes (`.mesh.230110883`). Everything else in the addon works exactly as it does upstream, for every supported game.
+Both SF6 features target Street Fighter 6 character meshes (`.mesh.230110883`). Other games continue to use the base addon's import/export paths and have not been revalidated by the SF6 tests.
 
 SF6 character files follow a fixed layout, and the addon reads it from the imported filename:
 
@@ -81,7 +81,7 @@ The three digits before the slot are the costume number, and they are kept exact
 
 What this mode supports: moving vertices, shape key edits, supported face deletions and `C_Hip` stubs. Unimported LODs, normals and bounds keep their original data.
 
-What it does not support: new topology, UV edits, added or removed UV layers, and material reassignment. Those are detected before anything is written, and the export stops with an explanation rather than overwriting your file.
+What it does not support: new topology, UV edits, added or removed UV layers, and material reassignment. These checks stop the export with an explanation before replacing the destination file.
 
 A project saved before this feature existed has no source metadata attached. Re-import the original mesh to use this mode with it; ordinary export still works as before.
 
@@ -103,7 +103,7 @@ Three names are easy to mix up:
 
 Other fields: **Additional Categories** takes semicolon-separated entries such as `Hair; Colours`, and **Description** accepts `\n` for a line break, following [Fluffy's format](https://www.patreon.com/posts/61589372).
 
-Exports are staged before the destination is updated. Unrelated files and INI entries in an existing mod folder are left alone, and a mesh plus its parent menu roll back together if anything fails partway.
+Exports are staged before the destination is updated. Unrelated files and INI entries in an existing mod folder are left alone. On a commit failure, the exporter attempts to roll back both the mesh and its parent menu; if recovery itself fails, it reports the retained backup location.
 
 ### Grouping variants
 
@@ -136,7 +136,7 @@ For worked examples of both recipes, field by field, see the [SF6 bundle guide](
 
 ## Base addon features
 
-Everything below comes from the original addon and is unchanged in this fork.
+The fork retains these tools from the original addon:
 
  - Importing and exporting of RE Engine mesh files.
  - Importing and exporting of RE Engine mdf2 (material) files.
@@ -181,7 +181,7 @@ Everything below comes from the original addon and is unchanged in this fork.
 
 Devil May Cry 5 · Resident Evil 2/3 Remake (RT and Non-RT) · Resident Evil 4 Remake · Resident Evil 7 Ray Tracing Version · Resident Evil 8 · Resident Evil 9 · Resident Evil Re:Verse · Monster Hunter Rise · Monster Hunter Wilds · Monster Hunter Stories 3 · **Street Fighter 6** · Dragon's Dogma 2 · Kunitsu-Gami: Path of the Goddess · Dead Rising Deluxe Remaster · Onimusha 2: Samurai's Destiny · Pragmata
 
-The SF6 features described above are specific to Street Fighter 6. Every other game is supported exactly as it is upstream.
+This is the base addon's supported-game list. The source-preservation and folder-export features described above are specific to Street Fighter 6.
 
 ---
 
@@ -192,12 +192,14 @@ The SF6 features described above are specific to Street Fighter 6. Every other g
 <details>
   <summary>Short version: replacing a model</summary>
 
+This is the ordinary mesh-rebuild workflow. For a new SF6 model or topology, disable **SF6: Preserve Source Data** at export. Ordinary export does not provide the source-mode deformation-data guarantee.
+
 1. Find the mesh you want to replace inside the extracted .pak files.
 2. Create a folder for your mod, then recreate the folder structure leading to the mesh file inside your mod folder, starting from the "natives" folder.
 3. Import the mesh file from File > Import > RE Mesh. Use the default import settings.
 4. Import the model you want to replace it with.
 5. Pose your model and rig it to the armature from the imported mesh file.
-6. Separate your model by material (Ctrl P > Material) so that every mesh only has one material.
+6. In Edit Mode, select the geometry and separate by material (P > By Material) so that every mesh only has one material.
 7. Move your meshes into the red .mesh collection, either by dragging them onto it in the outliner or pressing M (Move To Collection).
 8. Rename your meshes to the same naming format as the imported mesh. (Example: Group_0_Sub_0__**MaterialName**)
 9. Import the .mdf2 file that was alongside the .mesh file.
@@ -215,7 +217,7 @@ The SF6 features described above are specific to Street Fighter 6. Every other g
 21. Export from File > Export > RE Mesh/MDF and put them in the mod folder at their original chunk path.
 22. Install the mod folder using Fluffy Manager or use FirstNatives.
 
-For Street Fighter 6, steps 21 and 22 can be replaced by a single **SF6 Fluffy Mod Folder** export.
+For Street Fighter 6, **SF6 Fluffy Mod Folder** can handle the mesh portion of step 21 and write `modinfo.ini`. Export any MDF, texture and chain assets separately, then enable the mod in Fluffy as in step 22.
 
 </details>
 
@@ -253,6 +255,13 @@ Questions about the SF6 features in this fork belong on [this repository's issue
 ---
 
 ## Change log
+
+### Unreleased — on main
+* Exposed and forwarded the SF6 source-preservation option in batch and quick export, and clarified its preference labels.
+* Improved mesh operator failure reporting and background-process handling, and stopped writing unused UV snapshots on new imports.
+* Replaced the upstream automatic updater with **Open Fork Releases** for manual installation.
+* Added an informational notice when a mod folder already contains another SF6 character or costume. It does not block intentional combined mods.
+* Added the public bundle guide and interactive planner, and updated this README for the fork.
 
 ### V0.66-SF6.3
 * Added **SF6 Fluffy Mod Folder** export: writes the native mesh path and `modinfo.ini`, with an optional preview image. Direct mesh export is unchanged.
