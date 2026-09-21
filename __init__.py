@@ -783,7 +783,7 @@ class ImportREMesh(Operator, ImportHelper):
 		
 		row.enabled = self.mergeArmature == ""
 		
-		#layout.prop(self, "importBlendShapes")
+		layout.prop(self, "importBlendShapes", text="SF6: Preserve Source + Shape Keys")
 		
 		layout.label(text = "Merge With Armature")
 		
@@ -1071,7 +1071,10 @@ class ExportREMesh(Operator, ExportHelper):
 		layout.prop(self, "selectedOnly")
 		layout.label(text = "Advanced Options")
 		layout.prop(self, "exportAllLODs")
-		#layout.prop(self, "exportBlendShapes")
+		layout.prop(self, "exportBlendShapes", text="SF6: Preserve Source Data")
+		if self.targetCollection in bpy.data.collections and bpy.data.collections[self.targetCollection].get('SF6PreserveSource') and self.exportBlendShapes:
+			layout.label(text="Keeps all source LODs and deformation tables.", icon='INFO')
+			layout.label(text="Existing vertex/shape edits and deletions only.")
 		#hasREToolbox = hasattr(bpy.types, "OBJECT_PT_re_tools_quick_export_panel")
 		row = layout.row()
 		#row.enabled = hasREToolbox
