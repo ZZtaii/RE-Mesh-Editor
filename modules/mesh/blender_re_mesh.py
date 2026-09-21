@@ -632,6 +632,9 @@ def resolveMeshGameNameConflict(gameName,filePath):
 #---RE MESH IO FUNCTIONS---#
 
 def importREMeshFile(filePath,options):
+	sf6SourceMode = filePath.endswith('.mesh.230110883') and options.get('importBlendShapes', True) and not options.get('importArmatureOnly', False)
+	if sf6SourceMode and (options.get('mergeGroups') or options.get('mergeArmature')):
+		raise ValueError('SF6 source mode requires Merge Groups and Merge Armature to be disabled')
 	meshImportStartTime = time.time()
 	fileName = os.path.split(filePath)[1].split(".mesh")[0]
 	try:
@@ -734,6 +737,9 @@ def importREMeshFile(filePath,options):
 	
 	
 	
+	if sf6SourceMode:
+		from .sf6_source import attach_source
+		attach_source(filePath, meshCollection, meshOffsetDict, options['rotate90'])
 	meshOffsetDict.clear()
 	if options["loadMaterials"] or options["loadMDFData"]:
 		#print(filePath.split(".mesh")[1])
@@ -958,6 +964,13 @@ def splitSharpEdges():
 
 
 def exportREMeshFile(filePath,options):
+	sourceCollection = bpy.data.collections.get(options.get('targetCollection', ''))
+	if sourceCollection is not None and sourceCollection.get('SF6PreserveSource') and options.get('exportBlendShapes', True):
+		if not filePath.endswith('.mesh.230110883'):
+			raise ValueError('SF6 source mode can only export mesh.230110883')
+		from .sf6_source import export_source
+		export_source(filePath, sourceCollection, options)
+		return True
 	#TODO Warning Conditions
 	#Invalid mesh naming scheme - notify when using blender material name and setting viscon id to 0
 	#Vertex groups weighted to bones that aren't on the armature
