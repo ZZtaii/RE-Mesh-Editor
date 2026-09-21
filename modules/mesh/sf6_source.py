@@ -197,11 +197,14 @@ def _write_hip_stub(out,src,part,obj,rotate):
         out[start:start+uv.nbytes]=uv.tobytes()
 
 
-def attach_source(filepath, collection, objects, rotate=True):
+def attach_source(filepath, collection, objects, rotate=True, source=None):
     """Attach verified retail metadata after the clean upstream geometry importer."""
     import bpy
-    data = open(filepath,'rb').read()
-    src = SourceMesh(data)
+    if source is None:
+        with open(filepath, 'rb') as source_file:
+            source = SourceMesh(source_file.read())
+    src = source
+    data = src.data
     source_hash = hashlib.sha256(data).hexdigest()
     text_name = '.SF6_SOURCE_'+source_hash[:40]
     txt = bpy.data.texts.get(text_name)
@@ -245,6 +248,41 @@ def attach_source(filepath, collection, objects, rotate=True):
     collection['SF6ArmatureSignature'] = json.dumps(_armature_signature(armatures[0] if armatures else None))
     collection['SF6ImportedParts'] = json.dumps([json.loads(o[META]) for o in objects.values()])
     return src
+
+
+def _validate_materials(obj):
+    # Object-linked materials can differ from the mesh data's material slots.
+    current = [slot.material.name if slot.material else None for slot in obj.material_slots]
+    if json.dumps(current) != obj['SF6OriginalMaterials']:
+        raise ValueError('Material reassignment is unsupported in source mode: '+obj.name)
+    # Each source submesh has a single material, even if a polygon's slot index
+    # has been changed without adding a new material slot.
+    if any(face.material_index != 0 for face in obj.data.polygons):
+        raise ValueError('Face material reassignment is unsupported in source mode: '+obj.name)
+
+
+def _validate_uvs(src, part, mesh, ids, object_name):
+    kinds = [kind for kind in (2, 3) if kind in src.elements]
+    if len(mesh.uv_layers) != len(kinds):
+        raise ValueError('UV layers were added or removed: '+object_name)
+    # Compare every layer with the embedded source. This also works for saved
+    # projects from the first preservation build, which only snapshot UV0.
+    loop_vertices = np.empty(len(mesh.loops), np.int32)
+    mesh.loops.foreach_get('vertex_index', loop_vertices)
+    for layer, kind in zip(mesh.uv_layers, kinds):
+        stride, offset = src.elements[kind]
+        if stride != 4:
+            raise ValueError('Unsupported source UV stride: '+object_name)
+        expected = np.frombuffer(src.data, '<f2', part['count']*2,
+                                 offset+part['start']*stride).reshape(-1, 2).copy()
+        # Match the importer's half-float V conversion, including rounding.
+        expected[:, 1] *= -1
+        expected[:, 1] += 1
+        expected = expected.astype('<f4')[ids[loop_vertices]]
+        current = np.empty((len(layer.data), 2), '<f4')
+        layer.data.foreach_get('uv', current.ravel())
+        if not np.array_equal(current, expected):
+            raise ValueError('UV edits are unsupported in source mode ('+layer.name+'): '+object_name)
 
 
 def export_source(filepath, collection, options):
@@ -299,6 +337,7 @@ def export_source(filepath, collection, options):
             raise ValueError('Apply position edits in Edit Mode; object transforms are unsupported: '+obj.name)
         if any(m.type != 'ARMATURE' and (m.show_viewport or m.show_render) for m in obj.modifiers):
             raise ValueError('Apply/remove non-armature modifiers before source export: '+obj.name)
+        _validate_materials(obj)
         if _is_hip_stub(obj):
             _write_hip_stub(out,src,part,obj,rotate)
             edits['hip_stubs']+=1
@@ -318,22 +357,13 @@ def export_source(filepath, collection, options):
             off=face_base+fid*3*src.index_size
             out[off:off+3*src.index_size]=bytes(3*src.index_size)
             edits['removed_faces']+=1
-        if json.dumps([m.name if m else None for m in mesh.materials]) != obj['SF6OriginalMaterials']:
-            raise ValueError('Material reassignment is unsupported in source mode: '+obj.name)
         original_weights=json.loads(obj['SF6OriginalWeights'])
         for v, vid in zip(mesh.vertices,ids):
             current=sorted((obj.vertex_groups[g.group].name,g.weight) for g in v.groups)
             original=sorted(tuple(g) for g in original_weights[vid])
             if current!=original:
                 raise ValueError('Weight edits are unsupported in source mode: '+obj.name)
-        original_uv=json.loads(obj['SF6OriginalUV'])
-        if original_uv:
-            if not mesh.uv_layers:
-                raise ValueError('UV layer removed: '+obj.name)
-            for face,fid in zip(mesh.polygons,fids):
-                for corner,loop in enumerate(face.loop_indices):
-                    if list(mesh.uv_layers[0].data[loop].uv)!=original_uv[int(fid)*3+corner]:
-                        raise ValueError('UV edits are unsupported in source mode: '+obj.name)
+        _validate_uvs(src, part, mesh, ids, obj.name)
         keys=mesh.shape_keys.key_blocks if mesh.shape_keys else None
         expected_shapes={name:(delta,ranges) for name,delta,ranges in src.part_shapes(part)}
         actual_names=set(k.name for k in list(keys)[1:]) if keys else set()
