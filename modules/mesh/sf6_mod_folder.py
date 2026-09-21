@@ -54,7 +54,7 @@ class SF6Asset:
 
     @property
     def slot_name(self):
-        return {'01': 'Head', '02': 'Hair'}.get(self.slot, 'Mesh ' + self.slot)
+        return {'00': 'Head', '01': 'Body', '02': 'Hair'}.get(self.slot, 'Mesh ' + self.slot)
 
 
 def parse_asset_name(value):

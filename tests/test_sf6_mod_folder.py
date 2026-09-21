@@ -32,7 +32,7 @@ class ModFolderTests(unittest.TestCase):
         self.assertEqual(self.asset.relative_path.as_posix(),
                          'natives/stm/product/model/esf/esf033/002/01/esf033_002_01.mesh.230110883')
         self.assertEqual(self.asset.category, '!Characters > Yasmine')
-        for slot, label in (('01', 'Head'), ('02', 'Hair'), ('00', 'Mesh 00')):
+        for slot, label in (('00', 'Head'), ('01', 'Body'), ('02', 'Hair'), ('03', 'Mesh 03')):
             asset = package.parse_asset_name(f'esf032_001_{slot}.mesh.230110883')
             self.assertEqual(asset.character_name, 'Ingrid')
             self.assertEqual(asset.costume, '001')
