@@ -297,8 +297,12 @@ def export_source(filepath, collection, options):
     src = SourceMesh(data)
     out = bytearray(data)
     rotate = collection['SF6SourceRotate']
-    if options.get('selectedOnly'):
-        raise ValueError('SF6 source mode exports the source collection; Selected Only is unsupported')
+    selected = set(bpy.context.selected_objects) if options.get('selectedOnly') else None
+    if selected is not None:
+        selected = {o for o in collection.all_objects if o in selected and o.type == 'MESH'
+                    and not o.get('~TYPE') and not o.get('MeshExportExclude')}
+        if not selected:
+            raise ValueError('No selected source mesh objects in the target collection')
     if options.get('rotate90',True) != rotate:
         raise ValueError('Use the same axis conversion setting as the source import')
     armatures = [o for o in collection.all_objects if o.type == 'ARMATURE']
@@ -312,6 +316,8 @@ def export_source(filepath, collection, options):
     objects = {}
     for obj in collection.all_objects:
         if obj.type != 'MESH' or obj.get('~TYPE'):
+            continue
+        if selected is not None and obj not in selected:
             continue
         if META not in obj or obj.get('SF6SourceSHA256') != collection['SF6SourceSHA256']:
             raise ValueError(
@@ -402,7 +408,10 @@ def export_source(filepath, collection, options):
                     edits['shape_vertices']+=1
             if np.any(changed&~covered&np.any(new_delta!=0,axis=1)):
                 raise ValueError('Shape edit extends outside its authored range: '+name)
-    # All source LODs stay present, including levels that were not imported.
+    if selected is not None:
+        from .sf6_source_subset import compact_source_subset
+        out = compact_source_subset(out, src, set(objects), options.get('exportAllLODs', True))
+    # Full-collection export retains the existing source-layout behavior.
     directory=os.path.dirname(os.path.abspath(filepath))
     fd,temp=tempfile.mkstemp(prefix='.sf6-',suffix='.tmp',dir=directory)
     try:
@@ -412,5 +421,7 @@ def export_source(filepath, collection, options):
     finally:
         if os.path.exists(temp):
             os.remove(temp)
-    print('SF6 source export:',json.dumps(edits),'; all source deformation tables and LODs retained')
+    print('SF6 source export:',json.dumps(edits),
+          '; selected source parts and their deformation data retained' if selected is not None
+          else '; all source deformation tables and LODs retained')
     return edits
