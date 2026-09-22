@@ -70,7 +70,7 @@ def main():
         target = root/original.name
         assert bpy.ops.re_mesh.batch_exporter('EXEC_DEFAULT', itemList_items=[item(target)]) == {'FINISHED'}
         assert target.read_bytes() == original.read_bytes()
-        assert collection['BatchExport_exportBlendShapes'] is True or collection['BatchExport_exportBlendShapes'] == 1
+        assert collection['BatchExport_preserveSource'] is True or collection['BatchExport_preserveSource'] == 1
         passed('batch_preserved_export_is_byte_identical')
 
         target.write_bytes(b'KEEP')
@@ -86,7 +86,7 @@ def main():
         with patch.object(addon, 'exportREMeshFile', ordinary_spy):
             assert bpy.ops.re_mesh.batch_exporter('EXEC_DEFAULT', itemList_items=[item(target, False)]) == {'FINISHED'}
         assert captured[-1]['exportBlendShapes'] is False
-        assert collection['BatchExport_exportBlendShapes'] == False
+        assert collection['BatchExport_preserveSource'] == False
         passed('batch_forwards_explicit_ordinary_mode')
 
         # Export a real legacy collection through the ordinary exporter too.
@@ -100,7 +100,7 @@ def main():
 
         # Quick Export must rebuild the list and use the saved mode, including false.
         captured.clear()
-        collection['BatchExport_exportBlendShapes'] = False
+        collection['BatchExport_preserveSource'] = False
         with patch.object(addon, 'exportREMeshFile', ordinary_spy):
             assert bpy.ops.re_mesh.quick_batch_export('EXEC_DEFAULT') == {'FINISHED'}
         assert len(captured) == 1 and captured[0]['exportBlendShapes'] is False
@@ -115,16 +115,16 @@ def main():
         for key in list(collection.keys()):
             if key.startswith('BatchExport_'):
                 del collection[key]
-        preferences.default_exportBlendShapes = False
+        preferences.default_exportBlendShapes = True
         items = Items()
         ops.populateCollectionList(items, collection, 0, '')
         assert items[0].exportBlendShapes is False
-        collection['BatchExport_exportBlendShapes'] = True
+        collection['BatchExport_preserveSource'] = True
         items = Items()
         ops.populateCollectionList(items, collection, 0, '')
         assert items[0].exportBlendShapes == True
         preferences.default_exportBlendShapes = True
-        passed('batch_mode_loads_preference_and_sparse_saved_override')
+        passed('batch_mode_ignores_global_preference_and_honors_saved_batch_override')
 
         # No destination/last-success fields should change on a helper failure.
         collection['BatchExport_path'] = 'previous-success'
@@ -170,7 +170,7 @@ def main():
         passed('batch_counts_non_finished_operator_result')
 
         collection['BatchExport_path'] = str(target)
-        collection['BatchExport_exportBlendShapes'] = False
+        collection['BatchExport_preserveSource'] = False
         with patch.object(addon, 'exportREMeshFile', return_value=False):
             cancelled(lambda:bpy.ops.re_mesh.quick_batch_export('EXEC_DEFAULT'))
         passed('quick_export_propagates_failure')

@@ -13,6 +13,7 @@ from bpy.props import (StringProperty,
                        )
 from .blender_re_mesh import solveRepeatedUVs
 from .re_mesh_propertyGroups import ExporterNodePropertyGroup,MESH_UL_REExporterList
+from .sf6_export_settings import BATCH_PRESERVE_SOURCE, batch_preserve_source
 from ..gen_functions import splitNativesPath
 from ..blender_utils import showErrorMessageBox
 class WM_OT_DeleteLoose(Operator):
@@ -175,7 +176,7 @@ class WM_OT_CreateMeshCollection(Operator):
 
 EXPORTER_WINDOW_SIZE = 800
 SPLIT_FACTOR = .4
-BATCH_EXPORT_BUILD = "SF6 Batch Fix 3"
+BATCH_EXPORT_BUILD = "SF6 Batch Fix 4"
 
 def update_checkAllItems(self, context):
 	if self.checkAllItems == True:
@@ -278,8 +279,7 @@ def populateCollectionList(itemList,collection,recursionLevel,parentName):
 		
 		if collection["~TYPE"] == "RE_MESH_COLLECTION":
 			item.exportType = "MESH"
-			preferences = bpy.context.preferences.addons[__package__.split('.')[0]].preferences
-			item.exportBlendShapes = collection.get("BatchExport_exportBlendShapes", preferences.default_exportBlendShapes)
+			item.exportBlendShapes = batch_preserve_source(collection)
 			
 			if "BatchExport_exportAllLODs" in collection:
 				try:
@@ -393,6 +393,8 @@ class WM_OT_REBatchExporter(Operator):
 					if 'FINISHED' not in result:
 						failCount += 1
 						meshFailures.append(f"{exportItem.name}: Mesh export was cancelled. See the system console for details.")
+					else:
+						bpy.data.collections[exportItem.name][BATCH_PRESERVE_SOURCE] = bool(exportItem.exportBlendShapes)
 				except Exception as err:
 					print(f"Mesh Export Failed: {str(err)}")
 					failCount += 1

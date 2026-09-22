@@ -26,7 +26,8 @@ BUNDLE_FIELDS = ('nameasbundle', 'addonfor', 'dummymod')
 DEFAULT_FIELDS = ('parent_directory', 'folder_name', 'mod_name', 'mod_version',
                   'mod_author', 'mod_category', 'mod_description', 'preview_path',
                   'last_character', 'extra_categories', 'bundle_name', 'parent_mod_name',
-                  'create_dummy_parent', 'parent_folder_name', 'parent_categories', 'export_content')
+                  'create_dummy_parent', 'parent_folder_name', 'parent_categories', 'export_content',
+                  'exportBlendShapes')
 
 
 @dataclass(frozen=True)
@@ -191,7 +192,7 @@ def render_modinfo(values, existing=''):
 
 def filter_defaults(values):
     result = {key: values[key] for key in DEFAULT_FIELDS
-              if isinstance(values.get(key), bool if key == 'create_dummy_parent' else str)}
+              if isinstance(values.get(key), bool if key in ('create_dummy_parent', 'exportBlendShapes') else str)}
     if result.get('export_content') not in ('MESH', 'MENU'):
         result.pop('export_content', None)
     return result

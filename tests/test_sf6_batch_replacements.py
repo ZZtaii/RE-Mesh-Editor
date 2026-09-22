@@ -68,7 +68,7 @@ def main():
         target = root/'replacement.mesh.230110883'
         target.write_bytes(b'KEEP')
         collection['BatchExport_path'] = 'previous-success'
-        collection['BatchExport_exportBlendShapes'] = True
+        collection['BatchExport_preserveSource'] = True
 
         try:
             mesh_io.exportREMeshFile(str(target), dict(targetCollection=collection.name,
@@ -92,7 +92,7 @@ def main():
         assert ops.WM_OT_REBatchExporter.execute(batch, bpy.context) == {'CANCELLED'}
         assert target.read_bytes() == b'KEEP'
         assert collection['BatchExport_path'] == 'previous-success'
-        assert collection['BatchExport_exportBlendShapes'] == True
+        assert collection['BatchExport_preserveSource'] == True
         assert any('1/1 files failed' in m and replacement.name in m
                    and 'Preserve Source Data' in m for m in messages), messages
         assert not any('finished successfully' in m for m in messages)
@@ -112,8 +112,8 @@ def main():
         rebuilt = target.read_bytes()
         assert rebuilt[:4] == b'MESH' and rebuilt != original.read_bytes()
         assert second.read_bytes() == original.read_bytes()
-        assert collection['BatchExport_exportBlendShapes'] == False
-        assert untouched['BatchExport_exportBlendShapes'] == True
+        assert collection['BatchExport_preserveSource'] == False
+        assert untouched['BatchExport_preserveSource'] == True
         passed('mixed_batch_rebuilds_replacement_only_when_explicitly_selected')
 
         saved = root/'batch-settings.blend'

@@ -89,8 +89,8 @@ class ExporterNodePropertyGroup(bpy.types.PropertyGroup):
 	   default = True)
 	exportBlendShapes : BoolProperty(
 	   name = "SF6: Preserve Source Data",
-	   description = "Preserve supported SF6 source data; requires an original imported with Preserve Source + Shape Keys. Disable explicitly to use ordinary export",
-	   default = True)
+	   description = "Batch export only. Off by default and independent of mod folder export. Enable to preserve supported SF6 source data from an original imported with Preserve Source + Shape Keys",
+	   default = False)
 	rotate90 : BoolProperty(
 	   name = "Convert Z Up To Y Up",
 	   description = "Rotates objects 90 degrees for export. Leaving this option enabled is recommended",

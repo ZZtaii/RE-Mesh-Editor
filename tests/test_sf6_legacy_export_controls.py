@@ -38,40 +38,41 @@ def main():
         target = root/'legacy.mesh.230110883'
         kwargs = dict(filepath=str(target), targetCollection=collection.name)
         with patch.object(addon, 'exportREMeshFile', capture):
-            collection['BatchExport_exportBlendShapes'] = False
+            collection['BatchExport_preserveSource'] = False
             assert bpy.ops.re_mesh.exportfile('EXEC_DEFAULT', **kwargs) == {'FINISHED'}
             assert calls[-1]['exportBlendShapes'] is False
-            assert collection['BatchExport_exportBlendShapes'] == False
+            assert collection['BatchExport_preserveSource'] == False
             passed('omitted_option_uses_saved_false')
 
-            collection['BatchExport_exportBlendShapes'] = True
+            collection['BatchExport_preserveSource'] = True
             assert bpy.ops.re_mesh.exportfile('EXEC_DEFAULT', **kwargs) == {'FINISHED'}
             assert calls[-1]['exportBlendShapes'] is True
             passed('omitted_option_uses_saved_true')
 
-            collection['BatchExport_exportBlendShapes'] = False
+            collection['BatchExport_preserveSource'] = False
             assert bpy.ops.re_mesh.exportfile('EXEC_DEFAULT', exportBlendShapes=True, **kwargs) == {'FINISHED'}
             assert calls[-1]['exportBlendShapes'] is True
-            assert collection['BatchExport_exportBlendShapes'] == True
+            assert collection['BatchExport_preserveSource'] == False
             passed('explicit_true_overrides_saved_false')
 
-            collection['BatchExport_exportBlendShapes'] = True
+            collection['BatchExport_preserveSource'] = True
             assert bpy.ops.re_mesh.exportfile('EXEC_DEFAULT', exportBlendShapes=False, **kwargs) == {'FINISHED'}
             assert calls[-1]['exportBlendShapes'] is False
-            assert collection['BatchExport_exportBlendShapes'] == False
+            assert collection['BatchExport_preserveSource'] == True
             passed('explicit_false_overrides_saved_true')
 
-            del collection['BatchExport_exportBlendShapes']
+            del collection['BatchExport_preserveSource']
+            collection['BatchExport_exportBlendShapes'] = True
             assert bpy.ops.re_mesh.exportfile('EXEC_DEFAULT', **kwargs) == {'FINISHED'}
-            assert calls[-1]['exportBlendShapes'] is True
-            passed('absent_saved_choice_keeps_preservation_default')
+            assert calls[-1]['exportBlendShapes'] is False
+            passed('absent_batch_choice_defaults_off_despite_old_shared_on')
 
-            collection['BatchExport_exportBlendShapes'] = ''
+            collection['BatchExport_preserveSource'] = ''
             assert bpy.ops.re_mesh.exportfile('EXEC_DEFAULT', **kwargs) == {'FINISHED'}
-            assert calls[-1]['exportBlendShapes'] is True
-            passed('invalid_saved_choice_does_not_disable_preservation')
+            assert calls[-1]['exportBlendShapes'] is False
+            passed('invalid_batch_choice_keeps_off_default')
 
-            collection['BatchExport_exportBlendShapes'] = False
+            collection['BatchExport_preserveSource'] = False
             other = dict(kwargs, filepath=str(root/'other.mesh.1808312334'))
             assert bpy.ops.re_mesh.exportfile('EXEC_DEFAULT', **other) == {'FINISHED'}
             assert calls[-1]['exportBlendShapes'] is True
@@ -79,7 +80,7 @@ def main():
 
         # An explicit request to preserve must still fail on missing provenance,
         # even when the collection's earlier saved choice is ordinary export.
-        collection['BatchExport_exportBlendShapes'] = False
+        collection['BatchExport_preserveSource'] = False
         collection['BatchExport_path'] = 'previous-success'
         target.write_bytes(b'KEEP')
         try:
@@ -89,7 +90,7 @@ def main():
         else:
             assert result == {'CANCELLED'}
         assert target.read_bytes() == b'KEEP'
-        assert collection['BatchExport_exportBlendShapes'] == False
+        assert collection['BatchExport_preserveSource'] == False
         assert collection['BatchExport_path'] == 'previous-success'
         passed('explicit_preservation_failure_keeps_destination_and_saved_choice')
 
