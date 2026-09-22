@@ -175,6 +175,7 @@ class WM_OT_CreateMeshCollection(Operator):
 
 EXPORTER_WINDOW_SIZE = 800
 SPLIT_FACTOR = .4
+BATCH_EXPORT_BUILD = "SF6 Batch Fix 2"
 
 def update_checkAllItems(self, context):
 	if self.checkAllItems == True:
@@ -314,7 +315,7 @@ def populateCollectionList(itemList,collection,recursionLevel,parentName):
 				except Exception as err:
 					print(f"Batch Export: Cannot auto determine path for {item.name}: {str(err)}")
 class WM_OT_REBatchExporter(Operator):
-	bl_label = "RE Batch Exporter"
+	bl_label = f"RE Batch Exporter ({BATCH_EXPORT_BUILD})"
 	bl_idname = "re_mesh.batch_exporter"
 	bl_description = "Export all selected RE Engine files quickly"
 	bl_options = {'INTERNAL'}
@@ -343,7 +344,7 @@ class WM_OT_REBatchExporter(Operator):
 	def execute(self, context):
 		if self.skipPrompt:
 			self.populate(context)
-		print("Batch export started.")
+		print(f"Batch export started. [{BATCH_EXPORT_BUILD}]")
 		
 		#Save which files are enabled
 		for item in self.itemList_items:
@@ -376,6 +377,7 @@ class WM_OT_REBatchExporter(Operator):
 				continue
 			if exportItem.exportType == "MESH":
 				try:
+					print(f"{exportItem.name}: SF6 Preserve Source Data = {bool(exportItem.exportBlendShapes)}")
 					result = bpy.ops.re_mesh.exportfile(
 						filepath = exportItem.path,
 						targetCollection = exportItem.name,
