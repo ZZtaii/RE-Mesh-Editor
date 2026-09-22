@@ -1101,6 +1101,15 @@ class ExportREMesh(Operator, ExportHelper):
 		layout.prop(self, "exportBoundingBoxes")
 	
 	def execute(self, context):
+		# Legacy batch callers (RE Toolbox) omit the SF6 preservation argument.
+		# Honor a saved choice only for non-dialog calls without an explicit value.
+		if not self.options.is_invoke and not self.properties.is_property_set("exportBlendShapes"):
+			collection = bpy.data.collections.get(self.targetCollection)
+			if collection is not None and (self.filepath.endswith('.mesh.230110883') or collection.get('SF6PreserveSource')):
+				savedMode = collection.get("BatchExport_exportBlendShapes")
+				if isinstance(savedMode, (bool, int)) and savedMode in (0, 1):
+					self.exportBlendShapes = bool(savedMode)
+					print(f"SF6 legacy export: using saved Preserve Source Data = {self.exportBlendShapes}")
 		options = {"targetCollection":self.targetCollection,"selectedOnly":self.selectedOnly,"exportAllLODs":self.exportAllLODs,"exportBlendShapes":self.exportBlendShapes,"rotate90":self.rotate90,"useBlenderMaterialName":self.useBlenderMaterialName,"preserveBoneMatrices":self.preserveBoneMatrices,"exportBoundingBoxes":self.exportBoundingBoxes,"autoSolveRepeatedUVs":self.autoSolveRepeatedUVs,"preserveSharpEdges":self.preserveSharpEdges}
 		try:
 			meshVersion = int(os.path.splitext(self.filepath)[1].replace(".",""))

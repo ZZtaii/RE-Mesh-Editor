@@ -175,7 +175,7 @@ class WM_OT_CreateMeshCollection(Operator):
 
 EXPORTER_WINDOW_SIZE = 800
 SPLIT_FACTOR = .4
-BATCH_EXPORT_BUILD = "SF6 Batch Fix 2"
+BATCH_EXPORT_BUILD = "SF6 Batch Fix 3"
 
 def update_checkAllItems(self, context):
 	if self.checkAllItems == True:
