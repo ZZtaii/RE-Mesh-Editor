@@ -24,6 +24,7 @@ from .modules.blender_utils import operator_exists
 from .modules.mesh.file_re_mesh import meshFileVersionToGameNameDict
 from .modules.mesh.blender_re_mesh import importREMeshFile,exportREMeshFile
 from .modules.mesh.sf6_mod_folder_operator import ExportSF6ModFolder
+from .modules.mesh.sf6_export_settings import BATCH_PRESERVE_SOURCE, batch_preserve_source
 from .modules.mesh.re_mesh_propertyGroups import (
 	ExporterNodePropertyGroup,
 	MESH_UL_REExporterList
@@ -1101,6 +1102,15 @@ class ExportREMesh(Operator, ExportHelper):
 		layout.prop(self, "exportBoundingBoxes")
 	
 	def execute(self, context):
+		# Legacy batch callers (RE Toolbox) omit the SF6 preservation argument.
+		# Use the independent batch choice only for calls without a dialog/value.
+		legacyBatchMode = False
+		if not self.options.is_invoke and not self.properties.is_property_set("exportBlendShapes"):
+			collection = bpy.data.collections.get(self.targetCollection)
+			if collection is not None and (self.filepath.endswith('.mesh.230110883') or collection.get('SF6PreserveSource')):
+				legacyBatchMode = True
+				self.exportBlendShapes = batch_preserve_source(collection)
+				print(f"SF6 legacy export: batch Preserve Source Data = {self.exportBlendShapes}")
 		options = {"targetCollection":self.targetCollection,"selectedOnly":self.selectedOnly,"exportAllLODs":self.exportAllLODs,"exportBlendShapes":self.exportBlendShapes,"rotate90":self.rotate90,"useBlenderMaterialName":self.useBlenderMaterialName,"preserveBoneMatrices":self.preserveBoneMatrices,"exportBoundingBoxes":self.exportBoundingBoxes,"autoSolveRepeatedUVs":self.autoSolveRepeatedUVs,"preserveSharpEdges":self.preserveSharpEdges}
 		try:
 			meshVersion = int(os.path.splitext(self.filepath)[1].replace(".",""))
@@ -1131,7 +1141,8 @@ class ExportREMesh(Operator, ExportHelper):
 				bpy.data.collections[self.targetCollection]["BatchExport_exportAllLODs"] = self.exportAllLODs
 				bpy.data.collections[self.targetCollection]["BatchExport_preserveSharpEdges"] = self.preserveSharpEdges
 				bpy.data.collections[self.targetCollection]["BatchExport_rotate90"] = self.rotate90
-				bpy.data.collections[self.targetCollection]["BatchExport_exportBlendShapes"] = self.exportBlendShapes
+				if legacyBatchMode:
+					bpy.data.collections[self.targetCollection][BATCH_PRESERVE_SOURCE] = self.exportBlendShapes
 				bpy.data.collections[self.targetCollection]["BatchExport_useBlenderMaterialName"] = self.useBlenderMaterialName
 				bpy.data.collections[self.targetCollection]["BatchExport_preserveBoneMatrices"] = self.preserveBoneMatrices
 				bpy.data.collections[self.targetCollection]["BatchExport_exportBoundingBoxes"] = self.exportBoundingBoxes

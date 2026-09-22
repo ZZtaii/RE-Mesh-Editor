@@ -179,7 +179,8 @@ class ExportSF6ModFolder(bpy.types.Operator):
     last_character: StringProperty(options={'HIDDEN'})
     destination: StringProperty(name='Destination', get=destination_preview)
     destination_notice: StringProperty(options={'HIDDEN', 'SKIP_SAVE'})
-    exportBlendShapes: BoolProperty(name='SF6 Preserve Source Data', default=True)
+    exportBlendShapes: BoolProperty(name='SF6 Preserve Source Data', default=True,
+        description='Mod folder export only; remembered independently of the batch exporter')
     rotate90: BoolProperty(name='Convert Z Up to Y Up', default=True)
 
     def invoke(self, context, event):
@@ -280,12 +281,14 @@ class ExportSF6ModFolder(bpy.types.Operator):
             context.scene['REMeshLastExportedMeshVersion'] = 230110883
             collection['BatchExport_path'] = str(output)
             for key, value in options.items():
-                if key not in ('targetCollection', 'selectedOnly'):
+                if key not in ('targetCollection', 'selectedOnly', 'exportBlendShapes'):
                     collection['BatchExport_' + key] = value
         mod_root = Path(parent).resolve() / self.folder_name
         if mesh_export:
             context.scene.re_mdf_toolpanel.modDirectory = str(mod_root / 'natives' / 'stm')
         values = {key: getattr(self, key) for key in package.DEFAULT_FIELDS}
+        if not mesh_export:
+            values['exportBlendShapes'] = load_operator_defaults(context, collection).get('exportBlendShapes', True)
         values.update(parent_directory=str(Path(parent).resolve()),
                       preview_path=str(Path(preview).resolve()) if preview else '',
                       mod_category=category, last_character=asset.character if asset else self.last_character)

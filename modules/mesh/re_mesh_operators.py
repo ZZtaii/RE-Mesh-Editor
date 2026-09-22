@@ -1,6 +1,7 @@
 #Author: NSA Cloud
 import bpy
 import os
+import textwrap
 from bpy.types import Operator
 
 from bpy.props import (StringProperty,
@@ -12,6 +13,7 @@ from bpy.props import (StringProperty,
                        )
 from .blender_re_mesh import solveRepeatedUVs
 from .re_mesh_propertyGroups import ExporterNodePropertyGroup,MESH_UL_REExporterList
+from .sf6_export_settings import BATCH_PRESERVE_SOURCE, batch_preserve_source
 from ..gen_functions import splitNativesPath
 from ..blender_utils import showErrorMessageBox
 class WM_OT_DeleteLoose(Operator):
@@ -174,6 +176,7 @@ class WM_OT_CreateMeshCollection(Operator):
 
 EXPORTER_WINDOW_SIZE = 800
 SPLIT_FACTOR = .4
+BATCH_EXPORT_BUILD = "SF6.5"
 
 def update_checkAllItems(self, context):
 	if self.checkAllItems == True:
@@ -276,8 +279,7 @@ def populateCollectionList(itemList,collection,recursionLevel,parentName):
 		
 		if collection["~TYPE"] == "RE_MESH_COLLECTION":
 			item.exportType = "MESH"
-			preferences = bpy.context.preferences.addons[__package__.split('.')[0]].preferences
-			item.exportBlendShapes = collection.get("BatchExport_exportBlendShapes", preferences.default_exportBlendShapes)
+			item.exportBlendShapes = batch_preserve_source(collection)
 			
 			if "BatchExport_exportAllLODs" in collection:
 				try:
@@ -313,7 +315,7 @@ def populateCollectionList(itemList,collection,recursionLevel,parentName):
 				except Exception as err:
 					print(f"Batch Export: Cannot auto determine path for {item.name}: {str(err)}")
 class WM_OT_REBatchExporter(Operator):
-	bl_label = "RE Batch Exporter"
+	bl_label = f"RE Batch Exporter ({BATCH_EXPORT_BUILD})"
 	bl_idname = "re_mesh.batch_exporter"
 	bl_description = "Export all selected RE Engine files quickly"
 	bl_options = {'INTERNAL'}
@@ -342,7 +344,7 @@ class WM_OT_REBatchExporter(Operator):
 	def execute(self, context):
 		if self.skipPrompt:
 			self.populate(context)
-		print("Batch export started.")
+		print(f"Batch export started. [{BATCH_EXPORT_BUILD}]")
 		
 		#Save which files are enabled
 		for item in self.itemList_items:
@@ -357,6 +359,7 @@ class WM_OT_REBatchExporter(Operator):
 			self.report({'WARNING'}, "No files are enabled for batch export.")
 			return {'CANCELLED'}
 		failCount = 0
+		meshFailures = []
 		for index,exportItem in enumerate(exportItemList):
 			if exportItem.invalid:
 				print(f"Skipping {exportItem.name} ({index+1}/{len(exportItemList)}) due to an invalid export path: {exportItem.path}")
@@ -374,6 +377,7 @@ class WM_OT_REBatchExporter(Operator):
 				continue
 			if exportItem.exportType == "MESH":
 				try:
+					print(f"{exportItem.name}: SF6 Preserve Source Data = {bool(exportItem.exportBlendShapes)}")
 					result = bpy.ops.re_mesh.exportfile(
 						filepath = exportItem.path,
 						targetCollection = exportItem.name,
@@ -388,9 +392,13 @@ class WM_OT_REBatchExporter(Operator):
 						)
 					if 'FINISHED' not in result:
 						failCount += 1
+						meshFailures.append(f"{exportItem.name}: Mesh export was cancelled. See the system console for details.")
+					else:
+						bpy.data.collections[exportItem.name][BATCH_PRESERVE_SOURCE] = bool(exportItem.exportBlendShapes)
 				except Exception as err:
 					print(f"Mesh Export Failed: {str(err)}")
 					failCount += 1
+					meshFailures.append(f"{exportItem.name}: {str(err).strip()}")
 			elif exportItem.exportType == "MDF":
 				try:
 					bpy.ops.re_mdf.exportfile(
@@ -462,9 +470,14 @@ class WM_OT_REBatchExporter(Operator):
 				failCount += 1
 		if failCount != 0:
 			message = f"{failCount}/{len(exportItemList)} files failed to export. See the system console for details."
+			if meshFailures:
+				message += " First mesh failure: " + meshFailures[0]
 			self.report({'WARNING'}, message)
 			if not bpy.app.background:
-				showErrorMessageBox(message)
+				def draw_failure(popup, context):
+					for line in textwrap.wrap(message, width=88):
+						popup.layout.label(text=line)
+				context.window_manager.popup_menu(draw_failure, title="Batch Export Failed", icon='ERROR')
 			return {'CANCELLED'}
 		else:
 			self.report({"INFO"},"Batch export finished successfully.")
@@ -574,6 +587,15 @@ class WM_OT_REBatchExporter(Operator):
 				if item.exportType == "MESH":
 					box.prop(item, "exportAllLODs")
 					box.prop(item, "exportBlendShapes")
+					collection = bpy.data.collections.get(item.name)
+					if item.path.endswith('.mesh.230110883') or (collection and collection.get('SF6PreserveSource')):
+						if item.exportBlendShapes:
+							box.label(text="Preserves the original SF6 mesh layout.", icon='INFO')
+							box.label(text="New/replaced meshes need ordinary export.")
+							box.label(text="Disable preservation to rebuild this mesh.")
+						else:
+							box.label(text="Ordinary export rebuilds this mesh.", icon='INFO')
+							box.label(text="Original SF6 deformation data is not kept.")
 					box.prop(item,"autoSolveRepeatedUVs")
 					box.prop(item,"preserveSharpEdges")
 					box.prop(item, "rotate90")

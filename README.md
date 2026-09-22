@@ -8,9 +8,9 @@ This is a fork of [RE Mesh Editor](https://github.com/NSACloud/RE-Mesh-Editor) b
 
 ### [Download the latest release](https://github.com/ZZtaii/RE-Mesh-Editor/releases/latest)
 
-Current release: **V0.66-SF6.4** · [Change log](#change-log) · [SF6 workflows](#street-fighter-6-workflows)
+Current release: **V0.66-SF6.5** · [Change log](#change-log) · [SF6 workflows](#street-fighter-6-workflows)
 
-> **V0.66-SF6.4 is the stable fork release.** Keep backups of your work and follow the source-preservation limits below.
+> **V0.66-SF6.5 is the stable fork release.** Keep backups of your work and follow the source-preservation limits below.
 
 > **Tested with Blender 4.5.3 LTS.** For newer versions, check [the upstream Blender performance report](https://projects.blender.org/blender/blender/issues/155858) and its current status.
 
@@ -53,7 +53,7 @@ A mesh file that fails to parse no longer wipes your scene first. Source-preserv
 
 If you are replacing an existing installation, save your work and restart Blender afterwards.
 
-**Updating:** reinstall from the [latest fork release](https://github.com/ZZtaii/RE-Mesh-Editor/releases/latest), then restart Blender. V0.66-SF6.4 provides an **Open Fork Releases** button for this manual workflow. V0.66-SF6.3 and older builds still show the upstream updater; use the fork's release page instead of that updater.
+**Updating:** reinstall from the [latest fork release](https://github.com/ZZtaii/RE-Mesh-Editor/releases/latest), then restart Blender. V0.66-SF6.4 and newer provide an **Open Fork Releases** button for this manual workflow. V0.66-SF6.3 and older builds still show the upstream updater; use the fork's release page instead of that updater.
 
 The addon's internal version still reads `0.66`, which is the upstream version this fork is based on. The `SF6.x` part of the release tag is the fork's own revision.
 
@@ -84,6 +84,16 @@ What this mode supports: moving vertices, shape key edits, supported face deleti
 What it does not support: new topology, UV edits, added or removed UV layers, and material reassignment. These checks stop the export with an explanation before replacing the destination file.
 
 A project saved before this feature existed has no source metadata attached. Re-import the original mesh to use this mode with it; ordinary export still works as before.
+
+### Batch export and preservation settings
+
+**RE Batch Exporter** starts with **SF6: Preserve Source Data OFF**. It remembers your choice per mesh collection after a successful export. The Fluffy folder exporter remembers its own choice, initially ON; changing either exporter cannot change the other's preservation setting. Direct mesh exports also leave the batch choice alone.
+
+When upgrading, the new independent batch setting starts OFF even in existing projects. Older versions shared a saved value between exporters, so that value is deliberately ignored. Enable batch preservation explicitly for collections that need it.
+
+Legacy **RE Toolbox** batch calls use this same independent batch choice when they omit the preservation option. Updating RE Mesh Editor is sufficient for this compatibility fix; RE Toolbox itself does not need a patch. Direct exports with an explicit option or a displayed file-browser setting keep that choice.
+
+Use ordinary export (preservation OFF) for added or replaced mesh parts, including new geometry joined into an existing object. This rebuilds the whole exported mesh and does not retain the original SF6 deformation data. Preservation ON still validates the original source layout; it cannot selectively skip new parts.
 
 ### Exporting a Fluffy mod folder
 
@@ -255,6 +265,13 @@ Questions about the SF6 features in this fork belong on [this repository's issue
 ---
 
 ## Change log
+
+### V0.66-SF6.5
+* Fixed legacy RE Toolbox batch compatibility when the caller omits the SF6 preservation option.
+* Defaulted batch preservation OFF and separated its saved per-collection choice from folder and direct exports. Folder preservation keeps its own remembered choice, initially ON.
+* Kept explicit direct-export options and displayed file-browser settings authoritative.
+* Added clearer source-identity errors for new/replacement objects and the first mesh failure to RE Mesh Editor's batch error report.
+* Added regression coverage for replacement meshes, legacy calls, independent settings and save/reopen behavior.
 
 ### V0.66-SF6.4
 * Exposed and forwarded the SF6 source-preservation option in batch and quick export, and clarified its preference labels.
