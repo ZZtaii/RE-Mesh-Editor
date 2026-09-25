@@ -2,7 +2,7 @@
 import bpy
 import os
 import textwrap
-from bpy.types import Operator
+from bpy.types import Operator, PropertyGroup
 
 from bpy.props import (StringProperty,
                        BoolProperty,
@@ -10,12 +10,179 @@ from bpy.props import (StringProperty,
                        FloatProperty,
                        FloatVectorProperty,
                        EnumProperty,
+                       PointerProperty,
                        )
 from .blender_re_mesh import solveRepeatedUVs
 from .re_mesh_propertyGroups import ExporterNodePropertyGroup,MESH_UL_REExporterList
 from .sf6_export_settings import BATCH_PRESERVE_SOURCE, batch_preserve_source
+from .sf6_shape_transfer import ShapeTransferError, transfer_shape_keys
 from ..gen_functions import splitNativesPath
 from ..blender_utils import showErrorMessageBox
+
+
+def _sf6_shape_mesh_poll(_settings, obj):
+	return obj.type == "MESH"
+
+
+class SF6ShapeTransferSettings(PropertyGroup):
+	"""Explicit donor and target for an SF6 body shape transfer."""
+
+	donor: PointerProperty(
+		name="Original Body",
+		description="Body mesh imported from the original SF6 mesh with Preserve Source + Shape Keys",
+		type=bpy.types.Object,
+		poll=_sf6_shape_mesh_poll,
+	)
+	target: PointerProperty(
+		name="Edited Body",
+		description="Edited SF6 body mesh whose added vertices should receive compatible shape motion",
+		type=bpy.types.Object,
+		poll=_sf6_shape_mesh_poll,
+	)
+	max_distance: FloatProperty(
+		name="Max Match Distance",
+		description="Maximum distance from an added target vertex to the donor body surface, in Blender units",
+		default=0.04,
+		min=0.0001,
+		max=0.25,
+		precision=4,
+	)
+	leg_only: BoolProperty(
+		name="Leg Shapes Only",
+		description="Transfer Knee/Thigh corrections only; leave the edited body's original chest and arm shapes intact",
+		default=True,
+	)
+
+
+def _sf6_transfer_from_settings(context, dry_run):
+	settings = context.scene.sf6_shape_transfer_settings
+	if settings.donor is None or settings.target is None:
+		raise ShapeTransferError("Choose both the original body and edited body meshes.")
+	if settings.donor == settings.target:
+		raise ShapeTransferError("The original and edited body must be different mesh objects.")
+	return transfer_shape_keys(
+		settings.donor,
+		settings.target,
+		max_distance=settings.max_distance,
+		leg_only=settings.leg_only,
+		dry_run=dry_run,
+	)
+
+
+def _sf6_transfer_summary(result):
+	matched = result.get("matched_shapes", ())
+	nonzero = sum(int(item.get("nonzero_vertices", 0)) for item in matched)
+	skipped = int(result.get("skipped_existing_shape_vertices", 0))
+	return (
+		f"{result.get('mapped_vertices', 0)}/{result.get('candidate_vertices', 0)} added vertices mapped; "
+		f"{len(matched)} shapes matched; {nonzero} new shape-vertex changes; "
+		f"{skipped} existing changes kept"
+	)
+
+
+class WM_OT_PreviewSF6ShapeTransfer(Operator):
+	"""Inspect the possible shape transfer without changing either mesh."""
+
+	bl_label = "Preview SF6 Shape Transfer"
+	bl_idname = "re_mesh.preview_sf6_shape_transfer"
+	bl_description = "Check source coverage and compatible shape keys before changing the edited body"
+	bl_options = {'REGISTER'}
+
+	@classmethod
+	def poll(cls, context):
+		return context.scene is not None and context.mode == 'OBJECT'
+
+	def _preview(self, context):
+		try:
+			result = _sf6_transfer_from_settings(context, dry_run=True)
+		except ShapeTransferError as exc:
+			self.report({'ERROR'}, str(exc))
+			return None
+		print("SF6 shape transfer preview:", result)
+		self.report({'INFO'}, _sf6_transfer_summary(result))
+		return result
+
+	def invoke(self, context, _event):
+		self._preview_result = self._preview(context)
+		if self._preview_result is None:
+			return {'CANCELLED'}
+		return context.window_manager.invoke_props_dialog(self, width=640)
+
+	def draw(self, _context):
+		result = getattr(self, "_preview_result", None)
+		if result is None:
+			self.layout.label(text="Run Preview to inspect the transfer.")
+			return
+		layout = self.layout
+		layout.label(text=_sf6_transfer_summary(result), icon='INFO')
+		layout.label(text=f"Original: {result.get('donor', '')}")
+		layout.label(text=f"Edited: {result.get('target', '')}")
+		layout.label(text=(
+			f"Verified original / edited retail vertices: "
+			f"{result.get('verified_donor_vertices', 0)} / "
+			f"{result.get('verified_source_vertices', 0)}"
+		))
+		layout.label(text=(
+			f"Matched by exact UV: {result.get('uv_exact_vertices', 0)}; "
+			f"nearby surface: {result.get('surface_sampled_vertices', 0)}"
+		))
+		if result.get("ambiguous_uv_fallback_vertices", 0):
+			layout.label(text=(
+				f"Ambiguous UVs sent to surface search: "
+				f"{result['ambiguous_uv_fallback_vertices']}"
+			))
+		layout.label(text="Unmapped added vertices remain unchanged.")
+		rejected = result.get("rejected", {})
+		if rejected:
+			layout.label(text=(
+				"Rejected by distance: {distance}; normals: {normal}; side: {side}; "
+				"degenerate: {degenerate}".format(**rejected)
+			))
+		layout.label(text=f"Farthest accepted match: {result.get('max_accepted_distance', 0.0):.4f} Blender units")
+		for item in result.get("matched_shapes", ()):
+			layout.label(text=(
+				f"{item['target']}  ←  {item['donor']}: "
+				f"{item.get('nonzero_vertices', 0)} new, "
+				f"{item.get('skipped_existing_vertices', 0)} kept"
+			))
+		for label, key in (("No matching donor shape", "unmatched_target_shapes"),
+		                   ("Not selected for this transfer", "skipped_target_shapes"),
+		                   ("Donor shape unused", "unmatched_donor_shapes")):
+			unmatched = result.get(key, ())
+			if unmatched:
+				box = layout.box()
+				box.label(text=f"{label} ({len(unmatched)})", icon='INFO')
+				for name in unmatched:
+					box.label(text=name)
+
+	def execute(self, context):
+		if getattr(self, "_preview_result", None) is None:
+			if self._preview(context) is None:
+				return {'CANCELLED'}
+		return {'FINISHED'}
+
+
+class WM_OT_TransferSF6ShapeKeys(Operator):
+	"""Add compatible donor shape motion to edited vertices; preserve retail vertices."""
+
+	bl_label = "Transfer SF6 Shape Keys"
+	bl_idname = "re_mesh.transfer_sf6_shape_keys"
+	bl_description = "Transfer compatible donor shape motion only to edited body vertices (Undo supported)"
+	bl_options = {'REGISTER', 'UNDO'}
+
+	@classmethod
+	def poll(cls, context):
+		return context.scene is not None and context.mode == 'OBJECT'
+
+	def execute(self, context):
+		try:
+			result = _sf6_transfer_from_settings(context, dry_run=False)
+		except ShapeTransferError as exc:
+			self.report({'ERROR'}, str(exc))
+			return {'CANCELLED'}
+		print("SF6 shape transfer result:", result)
+		self.report({'INFO'}, "Transferred SF6 shapes: " + _sf6_transfer_summary(result))
+		return {'FINISHED'}
 class WM_OT_DeleteLoose(Operator):
 	bl_label = "Delete Loose Geometry"
 	bl_idname = "re_mesh.delete_loose"

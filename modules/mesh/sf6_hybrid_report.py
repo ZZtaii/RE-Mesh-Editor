@@ -8,6 +8,7 @@ def format_hybrid_report(report):
     parts = report['parts']
     source_vertices = sum(int(part.get('source_vertices', 0)) for part in parts)
     rebuilt_vertices = sum(int(part.get('rebuilt_vertices', 0)) for part in parts)
+    transferred_vertices = sum(int(part.get('transferred_vertices', 0)) for part in parts)
     zero_delta_vertices = sum(int(part.get('zero_delta_vertices', 0)) for part in parts)
     shape_links = sum(int(part.get('shape_links', 0)) for part in parts)
     part_word = 'part' if len(parts) == 1 else 'parts'
@@ -25,7 +26,14 @@ def format_hybrid_report(report):
                 f"of {report['source_lod0_shape_links']} source links."
             )
     if shape_links:
-        lines.append(f'{zero_delta_vertices} rebuilt vertices in shaped parts have zero shape deltas.')
+        if transferred_vertices:
+            lines.append(
+                f'{transferred_vertices} rebuilt vertices have transferred shape deltas; '
+                f'{zero_delta_vertices} rebuilt vertices in shaped parts still have zero deltas. '
+                'Transferred deltas are interpolated edits, not verified retail source values.'
+            )
+        else:
+            lines.append(f'{zero_delta_vertices} rebuilt vertices in shaped parts have zero shape deltas.')
     else:
         lines.append('The selected parts have no source shape links; this output has no blend shapes.')
     if 'source_lods' in report and 'output_lods' in report:
@@ -48,7 +56,8 @@ def format_hybrid_report(report):
         status = ('no source identity (rebuilt)' if part.get('status') == 'no_source'
                   else str(part.get('status', 'unknown')).replace('_', ' '))
         shape_note = (' All linked shapes have zero movement on this part.'
-                      if part.get('status') == 'no_source' and part.get('shape_links') else '')
+                      if part.get('status') == 'no_source' and part.get('shape_links')
+                      and not part.get('transferred_vertices') else '')
         lines.append(
             f"{identity}: {status}; "
             f"{int(part.get('source_vertices', 0))} source vertices / "
@@ -56,7 +65,8 @@ def format_hybrid_report(report):
             f"{int(part.get('source_triangles', 0))} source triangles / "
             f"{int(part.get('rebuilt_triangles', 0))} rebuilt triangles; "
             f"{int(part.get('shape_links', 0))} shape links; "
-            f"{int(part.get('zero_delta_vertices', 0))} zero-delta vertices.{shape_note}"
+            f"{int(part.get('zero_delta_vertices', 0))} zero-delta vertices; "
+            f"{int(part.get('transferred_vertices', 0))} transferred vertices.{shape_note}"
         )
     return lines
 
@@ -72,9 +82,12 @@ def report_hybrid_export(operator, report):
         for part in report.get('parts', []):
             if part.get('rebuilt_vertices'):
                 if part.get('status') == 'no_source' and part.get('shape_links'):
-                    detail = 'no source identity; all linked shapes have zero movement'
+                    detail = ('no source identity; '
+                              f"{part.get('transferred_vertices', 0)} transferred shape vertices, "
+                              f"{part.get('zero_delta_vertices', 0)} zero-delta vertices")
                 elif part.get('shape_links'):
-                    detail = f"{part.get('zero_delta_vertices', 0)} have zero shape deltas"
+                    detail = (f"{part.get('transferred_vertices', 0)} have transferred deltas, "
+                              f"{part.get('zero_delta_vertices', 0)} have zero shape deltas")
                 else:
                     detail = 'no source shape links'
                 operator.report(

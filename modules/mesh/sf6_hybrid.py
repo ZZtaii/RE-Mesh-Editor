@@ -2,7 +2,8 @@
 
 The caller first makes an ordinary export in a temporary file.  This module
 keeps that file's geometry and skeleton, then adds original LOD0 shapes where
-scene faces prove source vertex identity.  New vertices get zero shape deltas.
+scene faces prove source vertex identity. Rebuilt vertices can carry explicit
+Blender shape-key deltas; absent deltas remain zero.
 It does not claim to preserve the original source layout or lower LODs.
 """
 
@@ -205,12 +206,12 @@ def _analyze_part(source, ordinary, old, new, obj, rotate, no_source=False):
     expected_shapes = {n: d for n, d, _ in source.part_shapes(old)}
     keys = mesh.shape_keys.key_blocks if mesh.shape_keys else None
     actual = set(k.name for k in list(keys)[1:]) if keys else set()
-    if no_source:
-        _need(not actual, 'no-source object has shape keys that would be lost: ' + label)
-    else:
-        _need(actual == set(expected_shapes),
-              'shape key names differ from source on ' + label)
-    if keys and not no_source:
+    _need(actual == set(expected_shapes) or (no_source and not actual),
+          'shape key names differ from source on ' + label)
+    transferred_shapes = {}
+    transferred_vertices = np.zeros(new['count'], bool)
+    transferred_entries = 0
+    if keys and actual:
         _need(mesh.shape_keys.use_relative and all(
               key.relative_key == keys[0] and not key.vertex_group
               for key in list(keys)[1:]),
@@ -220,13 +221,19 @@ def _analyze_part(source, ordinary, old, new, obj, rotate, no_source=False):
         rebuilt_index = np.setdiff1d(np.arange(new['count'], dtype=np.int32), mapped_index)
         for name, source_delta in expected_shapes.items():
             actual_delta = sf6_source._from_blender(_coords(keys[name].data) - basis, rotate)
-            _need(np.isfinite(actual_delta).all(), 'non-finite shape key ' + name)
+            _need(np.isfinite(actual_delta).all() and
+                  np.max(np.abs(actual_delta), initial=0) <= 65504,
+                  'invalid shape key coordinates on ' + label + '/' + name)
             if len(mapped_index):
                 _need(np.max(np.abs(actual_delta[mapped_index] - source_delta[source_index])) <= 1e-6,
                       'edited source shape delta on ' + label + '/' + name)
             if len(rebuilt_index):
-                _need(np.max(np.abs(actual_delta[rebuilt_index])) <= 1e-6,
-                      'rebuilt geometry has nonzero shape delta on ' + label + '/' + name)
+                # Count only entries which survive the SF6 half-float encoding.
+                encoded = actual_delta[rebuilt_index].astype('<f2')
+                moved = np.any(encoded != 0, axis=1)
+                transferred_vertices[rebuilt_index] |= moved
+                transferred_entries += int(np.count_nonzero(moved))
+            transferred_shapes[name] = actual_delta
     status = ('no_source' if no_source else
               'source_mapped' if len(mapped_vertices) == new['count'] and
               len(mapped_faces) == new['faces'] else
@@ -238,11 +245,15 @@ def _analyze_part(source, ordinary, old, new, obj, rotate, no_source=False):
         'source_triangles': len(mapped_faces),
         'rebuilt_triangles': new['faces'] - len(mapped_faces),
         'shape_links': len(expected_shapes),
-        'zero_delta_vertices': new['count'] - len(mapped_vertices) if expected_shapes else 0,
-    }, mapped_vertices, mapped_faces
+        'transferred_vertices': int(np.count_nonzero(transferred_vertices)),
+        'transferred_shape_delta_entries': transferred_entries,
+        'zero_delta_vertices': (new['count'] - len(mapped_vertices) -
+                                int(np.count_nonzero(transferred_vertices))) if expected_shapes else 0,
+    }, mapped_vertices, mapped_faces, transferred_shapes
 
 
-def _build_shape_table(source, ordinary, source_parts, ordinary_parts, mapped, out):
+def _build_shape_table(source, ordinary, source_parts, ordinary_parts,
+                       mapped, transferred, out):
     raw = source.data
     _need(source.blend_offset and not ordinary.blend_offset,
           'source must have shapes and ordinary export must have none')
@@ -257,6 +268,8 @@ def _build_shape_table(source, ordinary, source_parts, ordinary_parts, mapped, o
     target_parts = set()
     shape_count = 0
     preserved_entries = 0
+    transferred_entries = 0
+    transferred_bounds = []
     for ti in range(target_count):
         ss, number, run, range_count, flag, rp = _read(raw, 'HHHBBQ', tp + ti * 16)
         _need(ss == shape_count and number and run <= ti and flag == 1 and range_count,
@@ -264,6 +277,8 @@ def _build_shape_table(source, ordinary, source_parts, ordinary_parts, mapped, o
         old_ranges = [_read(raw, 'IIII', rp + ri * 16) for ri in range(range_count)]
         old_span = sum(item[2] for item in old_ranges)
         _need(old_span > 0, 'empty source shape target')
+        transfer_min = np.full(3, np.inf, '<f4')
+        transfer_max = np.full(3, -np.inf, '<f4')
         placements = []
         new_ranges = []
         offset = len(deltas) // 8
@@ -293,6 +308,7 @@ def _build_shape_table(source, ordinary, source_parts, ordinary_parts, mapped, o
         range_ptr = _append(out, b''.join(struct.pack('<IIII', *r) for r in new_ranges))
         records.append(struct.pack('<HHHBBQ', ss, number, run, len(new_ranges), flag, range_ptr))
         for shape in range(number):
+            shape_name = source.shapes[0][ss + shape][0]
             for key, part, start, old_offset, length, identity in placements:
                 new = ordinary_parts[key]
                 output_length = length if identity else new['count']
@@ -312,12 +328,26 @@ def _build_shape_table(source, ordinary, source_parts, ordinary_parts, mapped, o
                     si = np.array([pair[1] for pair in indices], dtype=np.int32)
                     output[vi] = source_delta[si]
                     preserved_entries += len(indices)
+                if not identity and shape_name in transferred[key]:
+                    rebuilt = np.ones(output_length, bool)
+                    rebuilt[list(mapped[key][0])] = False
+                    encoded = transferred[key][shape_name][rebuilt].astype('<f2')
+                    # The axis conversion can turn +0 into -0. Both mean no
+                    # movement, but retain the old all-zero binary encoding.
+                    encoded[encoded == 0] = 0
+                    output[rebuilt, :3] = encoded
+                    transferred_entries += int(np.count_nonzero(np.any(encoded != 0, axis=1)))
+                    if len(encoded):
+                        transfer_min = np.minimum(transfer_min, encoded.astype('<f4').min(axis=0))
+                        transfer_max = np.maximum(transfer_max, encoded.astype('<f4').max(axis=0))
                 deltas.extend(output.tobytes())
         _need(len(deltas) // 8 == offset + (number - 1) * sum(r[2] for r in new_ranges),
               'shape delta packing mismatch')
         shape_count += number
+        transferred_bounds.append((transfer_min, transfer_max))
     _need(shape_count == len(source.shapes[0]), 'source shape name table differs from targets')
-    _need(preserved_entries > 0, 'nothing to preserve: no source shape vertices map safely')
+    _need(preserved_entries > 0 or transferred_entries > 0,
+          'nothing to preserve: no source shape vertices map safely and no transferred deltas')
 
     # Source extra descriptors cover vertices outside targets.  A part must be
     # wholly target-covered or wholly extra-covered to avoid guessed overlap.
@@ -372,9 +402,10 @@ def _build_shape_table(source, ordinary, source_parts, ordinary_parts, mapped, o
           not np.any(extra_coverage > 1),
           'shape target and zero-shape coverage overlap or leave gaps')
 
-    # Verify source AABBs already contain zero for every range where new
-    # vertices receive zero deltas.  Changing unknown bound fields is avoided.
-    aabbs = raw[ap:ap + target_count * 32]
+    # Keep source AABBs byte-for-byte when their known XYZ bounds still fit.
+    # Every rebuilt range may contain zero, and explicit transferred deltas
+    # can extend the first three bounds; the fourth components stay untouched.
+    aabbs = bytearray(raw[ap:ap + target_count * 32])
     _need(len(aabbs) == target_count * 32, 'short shape bounds')
     for ti, record in enumerate(records[:target_count]):
         _, _, _, n, _, rp = struct.unpack('<HHHBBQ', record)
@@ -386,6 +417,20 @@ def _build_shape_table(source, ordinary, source_parts, ordinary_parts, mapped, o
             bounds = np.frombuffer(aabbs, '<f4', count=8, offset=ti * 32).reshape(2, 4)
             _need(np.all(bounds[0, :3] <= 0) and np.all(bounds[1, :3] >= 0),
                   'source shape bounds exclude zero for rebuilt geometry')
+    expanded_bounds = 0
+    for ti, (minimum, maximum) in enumerate(transferred_bounds):
+        if not np.isfinite(minimum).all():
+            continue
+        bounds = np.frombuffer(aabbs, '<f4', count=8, offset=ti * 32).reshape(2, 4)
+        _need(np.isfinite(bounds[:, :3]).all() and
+              np.all(bounds[0, :3] <= bounds[1, :3]),
+              'invalid source shape bounds')
+        new_minimum = np.minimum(bounds[0, :3], minimum)
+        new_maximum = np.maximum(bounds[1, :3], maximum)
+        if np.any(new_minimum != bounds[0, :3]) or np.any(new_maximum != bounds[1, :3]):
+            bounds[0, :3] = new_minimum
+            bounds[1, :3] = new_maximum
+            expanded_bounds += 1
 
     target_ptr = _append(out, b''.join(records))
     aabb_ptr = _append(out, aabbs)
@@ -403,7 +448,8 @@ def _build_shape_table(source, ordinary, source_parts, ordinary_parts, mapped, o
     out.extend(struct.pack('<Q', new_lod))
     _write(out, 'Q', 64, new_header)
     _write(out, 'H', 16, _read(out, 'H', 16)[0] | 4)
-    return deltas, shape_count, target_count, extra_count, preserved_entries
+    return (deltas, shape_count, target_count, extra_count,
+            preserved_entries, transferred_entries, expanded_bounds)
 
 
 def _append_shape_names(source, ordinary, out, shape_count):
@@ -640,7 +686,7 @@ def _bone_names(mesh):
 
 
 def _verify_result(source, ordinary, result, source_parts, ordinary_parts,
-                   mapped, shape_count, normal_vertex, normal_face):
+                   mapped, transferred, shape_count, normal_vertex, normal_face):
     final = sf6_source.SourceMesh(result)
     _need(final.lod_count == ordinary.lod_count == 1 and
           final.parts == ordinary.parts and final.materials == ordinary.materials,
@@ -672,10 +718,15 @@ def _verify_result(source, ordinary, result, source_parts, ordinary_parts,
         source_ids = mapped[key][0]
         for name, expected in original_shapes.items():
             desired = np.zeros((new['count'], 3), dtype='<f4')
+            rebuilt = np.ones(new['count'], bool)
             for vi, sid in source_ids.items():
                 desired[vi] = expected[sid]
+                rebuilt[vi] = False
+            if name in transferred[key]:
+                desired[rebuilt] = transferred[key][name][rebuilt].astype('<f2').astype('<f4')
             _need(np.array_equal(output_shapes[name], desired),
-                  'shape deltas differ from verified source or zero: ' + repr(key) + '/' + name)
+                  'shape deltas differ from verified source or transferred keys: ' +
+                  repr(key) + '/' + name)
     header = _read(result, 'Q', 56)[0]
     _need(header != 0 and _read(result, 'Q', header)[0] == 1,
           'hybrid normal table missing')
@@ -752,31 +803,35 @@ def build_hybrid_mesh(source_bytes, ordinary_bytes, collection, selected_objects
           'selected source parts differ from selected scene objects')
     rotate = collection['SF6SourceRotate']
     mapped = {}
+    transferred = {}
     parts_report = []
     for key, old in source_parts.items():
-        report, vertices, faces = _analyze_part(
+        report, vertices, faces, shape_deltas = _analyze_part(
             source, ordinary, old, ordinary_parts[key], objects[key], rotate,
             no_source=key in no_source)
         mapped[key] = vertices, faces
+        transferred[key] = shape_deltas
         parts_report.append(report)
 
     out = bytearray(ordinary_bytes)
     if source.blend_offset:
-        delta, shape_count, targets, extras, preserved_entries = _build_shape_table(
-            source, ordinary, source_parts, ordinary_parts, mapped, out)
+        (delta, shape_count, targets, extras, preserved_entries,
+         transferred_entries, expanded_bounds) = _build_shape_table(
+            source, ordinary, source_parts, ordinary_parts, mapped, transferred, out)
         _append_shape_names(source, ordinary, out, shape_count)
         shaped = _append_shape_gpu(ordinary, out, delta)
     else:
         _need(selected is not None and not source.shapes[0],
               'nothing to preserve: retail source has no LOD0 shapes')
         shape_count = targets = extras = preserved_entries = 0
+        transferred_entries = expanded_bounds = 0
         shaped = ordinary
     normal_vertex, normal_face, copied, rebuilt, stub_exceptions = _normal_table(
         source, shaped, source_parts, ordinary_parts, mapped, objects)
     _append_normal_table(shaped, out, normal_vertex, normal_face)
     result = bytes(out)
     _verify_result(source, ordinary, result, source_parts, ordinary_parts,
-                   mapped, shape_count, normal_vertex, normal_face)
+                   mapped, transferred, shape_count, normal_vertex, normal_face)
     source_bones = _bone_names(source)
     output_bones = _bone_names(ordinary)
     report = {
@@ -801,8 +856,11 @@ def build_hybrid_mesh(source_bytes, ordinary_bytes, collection, selected_objects
         'shape_targets': targets,
         'zero_shape_descriptors': extras,
         'source_shape_delta_entries_retained': preserved_entries,
+        'transferred_shape_delta_entries': transferred_entries,
+        'shape_target_bounds_expanded': expanded_bounds,
         'source_vertices': sum(part['source_vertices'] for part in parts_report),
         'rebuilt_vertices': sum(part['rebuilt_vertices'] for part in parts_report),
+        'transferred_vertices': sum(part['transferred_vertices'] for part in parts_report),
         'source_triangles': sum(part['source_triangles'] for part in parts_report),
         'rebuilt_triangles': sum(part['rebuilt_triangles'] for part in parts_report),
         'normal_table_rebuilt': True,

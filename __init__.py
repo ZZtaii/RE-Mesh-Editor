@@ -31,6 +31,9 @@ from .modules.mesh.re_mesh_propertyGroups import (
 	MESH_UL_REExporterList
 	)
 from .modules.mesh.re_mesh_operators import (
+	SF6ShapeTransferSettings,
+	WM_OT_PreviewSF6ShapeTransfer,
+	WM_OT_TransferSF6ShapeKeys,
 	WM_OT_DeleteLoose,
 	WM_OT_RenameMeshToREFormat,
 	WM_OT_RemoveZeroWeightVertexGroups,
@@ -43,6 +46,7 @@ from .modules.mesh.re_mesh_operators import (
 )
 from .modules.mesh.ui_re_mesh_panels import (
 	OBJECT_PT_MeshObjectModePanel,
+	OBJECT_PT_SF6ShapeTransferPanel,
 	OBJECT_PT_MeshArmatureToolsPanel,
 	OBJECT_PT_REAssetExtensionPanel,
 	)
@@ -1631,6 +1635,9 @@ classes = [
 	WM_OT_REBatchExporter,
 	WM_OT_SolveRepeatedUVs,
 	WM_OT_QuickBatchExport,
+	SF6ShapeTransferSettings,
+	WM_OT_PreviewSF6ShapeTransfer,
+	WM_OT_TransferSF6ShapeKeys,
 	
 	#mdf
 	ImportREMDF,
@@ -1657,6 +1664,7 @@ classes = [
 	OBJECT_PT_MDFMaterialPreviewPanel,
 	OBJECT_PT_MDFMaterialLoadSettingsPanel,
 	OBJECT_PT_MeshObjectModePanel,
+	OBJECT_PT_SF6ShapeTransferPanel,
 	OBJECT_PT_MeshArmatureToolsPanel,
 	OBJECT_PT_MDFMaterialPanel,
 	OBJECT_PT_MDFFlagsPanel,
@@ -1859,6 +1867,7 @@ def register():
 	#REGISTER PROPERTY GROUP PROPERTIES
 	bpy.types.WindowManager.enableModFileTracking = bpy.props.BoolProperty(default=False)
 	bpy.types.Scene.re_mdf_toolpanel = PointerProperty(type=MDFToolPanelPropertyGroup)
+	bpy.types.Scene.sf6_shape_transfer_settings = PointerProperty(type=SF6ShapeTransferSettings)
 	bpy.types.Scene.re_modworkspace_toolpanel = PointerProperty(type=ModWorkspaceToolPanelPropertyGroup)
 	bpy.types.Object.re_mdf_material = PointerProperty(type=MDFMaterialPropertyGroup)
 	
@@ -1885,6 +1894,7 @@ def register():
 	
 def unregister():
 	del bpy.types.WindowManager.enableModFileTracking
+	del bpy.types.Scene.sf6_shape_transfer_settings
 	for classEntry in classes:
 		bpy.utils.unregister_class(classEntry)
 		

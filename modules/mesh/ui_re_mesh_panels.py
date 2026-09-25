@@ -41,6 +41,32 @@ class OBJECT_PT_MeshObjectModePanel(Panel):
 		layout.operator("re_mesh.batch_exporter",icon = "OUTLINER_OB_GROUP_INSTANCE")
 		#layout.operator("re_mesh.quick_batch_export",icon = "OUTLINER_OB_GROUP_INSTANCE")#TODO FIX
 		
+class OBJECT_PT_SF6ShapeTransferPanel(Panel):
+	"""Transfer original SF6 corrective shapes onto added body geometry."""
+
+	bl_label = "SF6 Shape Transfer"
+	bl_idname = "OBJECT_PT_sf6_shape_transfer_panel"
+	bl_parent_id = "OBJECT_PT_mesh_tools_panel"
+	bl_space_type = "VIEW_3D"
+	bl_region_type = "UI"
+	bl_category = "RE Mesh"
+	bl_options = {'DEFAULT_CLOSED'}
+
+	def draw(self, context):
+		layout = self.layout
+		settings = context.scene.sf6_shape_transfer_settings
+		layout.prop(settings, "donor")
+		layout.prop(settings, "target")
+		layout.prop(settings, "leg_only")
+		layout.prop(settings, "max_distance")
+		layout.label(text="Use bodies imported with SF6 Preserve Source.", icon='INFO')
+		layout.label(text="Existing retail shape vertices stay unchanged.")
+		layout.label(text="Export with SF6 Hybrid Shape Export (LOD0).")
+		row = layout.row(align=True)
+		row.enabled = bool(settings.donor and settings.target and settings.donor != settings.target)
+		row.operator("re_mesh.preview_sf6_shape_transfer", text="Preview", icon='INFO')
+		row.operator("re_mesh.transfer_sf6_shape_keys", text="Transfer", icon='SHAPEKEY_DATA')
+
 class OBJECT_PT_MeshArmatureToolsPanel(Panel):
 	bl_label = "Armature Tools"
 	bl_idname = "OBJECT_PT_mesh_armature_tools_panel"
@@ -97,4 +123,3 @@ class OBJECT_PT_REAssetExtensionPanel(Panel):
 				pass
 		else:
 			layout.label(text="Update RE Asset Library for more options.")
-				
