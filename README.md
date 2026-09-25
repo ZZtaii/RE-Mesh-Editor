@@ -61,7 +61,7 @@ The addon's internal version still reads `0.66`, which is the upstream version t
 
 ## Street Fighter 6 workflows
 
-Both SF6 features target Street Fighter 6 character meshes (`.mesh.230110883`). Other games continue to use the base addon's import/export paths and have not been revalidated by the SF6 tests.
+These SF6 features target Street Fighter 6 character meshes (`.mesh.230110883`). Other games continue to use the base addon's import/export paths and have not been revalidated by the SF6 tests.
 
 SF6 character files follow a fixed layout, and the addon reads it from the imported filename:
 
@@ -79,11 +79,25 @@ The three digits before the slot are the costume number, and they are kept exact
 2. Make your edits.
 3. **Export** from **File → Export → RE Mesh Editor → RE Mesh**, with **SF6: Preserve Source Data** enabled.
 
-What this mode supports: moving vertices, shape key edits, supported face deletions and `C_Hip` stubs. Unimported LODs, normals and bounds keep their original data.
+What this mode supports: moving vertices, shape key edits, supported face deletions and `C_Hip` stubs. Full-collection export retains unimported LODs, normals and bounds from the source.
+
+The armature in Blender may be merged or replaced while editing. Preservation export uses the **embedded original skeleton and source deformation data**, so bone edits in Blender do not appear in the exported file. Mesh part validation still applies.
+
+**Exporting selected parts:** enable **Selected Objects Only** together with **SF6: Preserve Source Data**. Only selected mesh objects belonging to the chosen **Mesh Collection** are exported, with their original deformation data. The collection's armature does not need to be selected or visible. Unselected parts are removed from the exported geometry and deformation tables.
+
+For a collection containing hidden alternatives, hide the unwanted objects, then select the remaining objects in Object Mode before exporting. Visibility and selection are separate in Blender: a visible object still needs to be selected. Select at least one LOD0 mesh. **Export All LODs** includes selected parts from other LODs; turning it off limits this selected export to LOD0. Unselected and unimported LODs are omitted.
 
 What it does not support: new topology, UV edits, added or removed UV layers, and material reassignment. These checks stop the export with an explanation before replacing the destination file.
 
 A project saved before this feature existed has no source metadata attached. Re-import the original mesh to use this mode with it; ordinary export still works as before.
+
+### Hybrid shape export for joined or added SF6 geometry
+
+For a preserved SF6 collection with added geometry or a changed rig, leave **SF6: Preserve Source Data** on and explicitly enable **SF6: Hybrid Shape Export (LOD0)** in the direct mesh or Fluffy mod folder exporter. This rebuilds the edited geometry and skeleton, then keeps unchanged source blend-shape deltas where vertices can be verified against the original. Added vertices in shaped parts receive zero deltas. The result contains **LOD0 only**; lower LODs and other original deformation data are not fully preserved. The exporter reports the source-mapped and rebuilt vertices, triangles, and shape links for each part in Blender's system console, with warnings for rebuilt parts.
+
+Hybrid export needs the original embedded source from an import made with **SF6: Preserve Source + Shape Keys**. With **Selected Objects Only** off, export exactly one object for each original LOD0 part. Joined new geometry within an original part can be rebuilt while verified source vertices keep their original deltas. A whole replacement object without source metadata can be used when its Group/Sub/material name matches the original part **and** its shape ranges and normal layout can be rebuilt safely; otherwise export refuses without replacing the destination. A supported replacement's shape links are present but **all deltas on that replacement are zero**. Shape-link counts alone do not mean that part moves with the shape. Hybrid export cannot recover shapes absent from a donor mesh, invent movement for newly modeled geometry, or carry edited shape-key deltas. Leave the hybrid option off for the strict source-preservation path, which keeps the original layout and all source LODs.
+
+For a direct hybrid export of a subset, enable **Selected Objects Only** and select the desired LOD0 mesh objects in Object Mode. The output contains only those parts; unselected parts and lower LODs are omitted. The armature does not need to be selected. Each selected part keeps only the source shape links that belong to it, with original deltas on verified vertices and zero deltas on added vertices. Selecting only parts without source shape links is allowed and produces a mesh without blend shapes; the exporter reports this explicitly. A shaped replacement with no safely mapped source vertices cannot provide any original shape movement by itself, so selecting that part alone is refused. The Fluffy mod folder exporter continues to export the whole collection.
 
 ### Batch export and preservation settings
 
@@ -93,7 +107,7 @@ When upgrading, the new independent batch setting starts OFF even in existing pr
 
 Legacy **RE Toolbox** batch calls use this same independent batch choice when they omit the preservation option. Updating RE Mesh Editor is sufficient for this compatibility fix; RE Toolbox itself does not need a patch. Direct exports with an explicit option or a displayed file-browser setting keep that choice.
 
-Use ordinary export (preservation OFF) for added or replaced mesh parts, including new geometry joined into an existing object. This rebuilds the whole exported mesh and does not retain the original SF6 deformation data. Preservation ON still validates the original source layout; it cannot selectively skip new parts.
+Ordinary export (preservation OFF) rebuilds added or replaced mesh parts without retaining the original SF6 deformation data. Hybrid shape export is the explicit LOD0 option above when the collection also contains source-matched shapes. Strict preservation still validates the source identity and supported edits of every exported part. **Selected Objects Only** can omit unselected new or replacement objects from strict source export.
 
 ### Exporting a Fluffy mod folder
 

@@ -6,6 +6,7 @@ import bpy
 from bpy.props import BoolProperty, EnumProperty, StringProperty
 
 from . import sf6_mod_folder as package
+from .sf6_hybrid_report import report_hybrid_export
 
 
 def settings_path():
@@ -181,6 +182,8 @@ class ExportSF6ModFolder(bpy.types.Operator):
     destination_notice: StringProperty(options={'HIDDEN', 'SKIP_SAVE'})
     exportBlendShapes: BoolProperty(name='SF6 Preserve Source Data', default=True,
         description='Mod folder export only; remembered independently of the batch exporter')
+    sf6HybridPreserve: BoolProperty(name='SF6 Hybrid Shape Export (LOD0)', default=False,
+        description='Rebuild LOD0 geometry/rig and keep unchanged source shape deltas on verified vertices; unmatched parts and vertices have zero deltas and lower LODs are lost')
     rotate90: BoolProperty(name='Convert Z Up to Y Up', default=True)
 
     def invoke(self, context, event):
@@ -241,6 +244,12 @@ class ExportSF6ModFolder(bpy.types.Operator):
         if self.export_content == 'MESH':
             layout.separator()
             layout.prop(self, 'exportBlendShapes')
+            row = layout.row()
+            row.enabled = self.exportBlendShapes and collection is not None and bool(collection.get('SF6PreserveSource'))
+            row.prop(self, 'sf6HybridPreserve')
+            if self.sf6HybridPreserve:
+                layout.label(text='Verified source deltas kept; unmatched parts get zero.', icon='INFO')
+                layout.label(text='Rebuilt geometry/rig; lower LODs are lost.')
             layout.prop(self, 'rotate90')
 
     def execute(self, context):
@@ -250,6 +259,9 @@ class ExportSF6ModFolder(bpy.types.Operator):
         if mesh_export and collection is None:
             self.report({'ERROR'}, 'Select the mesh collection to export.')
             return {'CANCELLED'}
+        if mesh_export and self.sf6HybridPreserve and not self.exportBlendShapes:
+            self.report({'ERROR'}, 'SF6 Hybrid Shape Export requires Preserve Source Data to be enabled.')
+            return {'CANCELLED'}
         try:
             asset = package.asset_from_collection(collection) if mesh_export else None
             if not self.parent_directory.strip():
@@ -258,7 +270,8 @@ class ExportSF6ModFolder(bpy.types.Operator):
             preview = bpy.path.abspath(self.preview_path) if self.preview_path else ''
             preferences = context.preferences.addons[__package__.split('.')[0]].preferences
             options = dict(targetCollection=collection.name if collection else '', selectedOnly=False,
-                           exportBlendShapes=self.exportBlendShapes, rotate90=self.rotate90)
+                           exportBlendShapes=self.exportBlendShapes, sf6HybridPreserve=self.sf6HybridPreserve,
+                           rotate90=self.rotate90)
             for name in ('exportAllLODs', 'autoSolveRepeatedUVs', 'preserveSharpEdges',
                          'useBlenderMaterialName', 'preserveBoneMatrices', 'exportBoundingBoxes'):
                 options[name] = getattr(preferences, 'default_' + name)
@@ -281,7 +294,7 @@ class ExportSF6ModFolder(bpy.types.Operator):
             context.scene['REMeshLastExportedMeshVersion'] = 230110883
             collection['BatchExport_path'] = str(output)
             for key, value in options.items():
-                if key not in ('targetCollection', 'selectedOnly', 'exportBlendShapes'):
+                if key not in ('targetCollection', 'selectedOnly', 'exportBlendShapes', 'sf6HybridPreserve') and not key.startswith('_'):
                     collection['BatchExport_' + key] = value
         mod_root = Path(parent).resolve() / self.folder_name
         if mesh_export:
@@ -298,4 +311,6 @@ class ExportSF6ModFolder(bpy.types.Operator):
         except OSError as error:
             self.report({'WARNING'}, 'Mod exported; defaults could not be saved: ' + str(error))
         self.report({'INFO'}, 'Exported mod folder: ' + str(mod_root))
+        if mesh_export and self.sf6HybridPreserve:
+            report_hybrid_export(self, options.get('_sf6HybridReport'))
         return {'FINISHED'}

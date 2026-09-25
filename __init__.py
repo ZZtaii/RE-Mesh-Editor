@@ -23,6 +23,7 @@ from .modules.blender_utils import operator_exists
 #mesh
 from .modules.mesh.file_re_mesh import meshFileVersionToGameNameDict
 from .modules.mesh.blender_re_mesh import importREMeshFile,exportREMeshFile
+from .modules.mesh.sf6_hybrid_report import report_hybrid_export
 from .modules.mesh.sf6_mod_folder_operator import ExportSF6ModFolder
 from .modules.mesh.sf6_export_settings import BATCH_PRESERVE_SOURCE, batch_preserve_source
 from .modules.mesh.re_mesh_propertyGroups import (
@@ -985,6 +986,10 @@ class ExportREMesh(Operator, ExportHelper):
 	   name = "SF6: Preserve Source Data",
 	   description = "Preserve supported SF6 source data; requires an original imported with Preserve Source + Shape Keys. Disable explicitly to use ordinary export",
 	   default = True)
+	sf6HybridPreserve : BoolProperty(
+	   name = "SF6: Hybrid Shape Export (LOD0)",
+	   description = "Explicitly rebuild LOD0 geometry and rig, then keep unchanged source shape deltas on verified vertices. Parts without source identity get zero deltas; lower LODs are lost",
+	   default = False)
 	rotate90 : BoolProperty(
 	   name = "Convert Z Up To Y Up",
 	   description = "Rotates objects 90 degrees for export. Leaving this option enabled is recommended",
@@ -1084,9 +1089,19 @@ class ExportREMesh(Operator, ExportHelper):
 		layout.label(text = "Advanced Options")
 		layout.prop(self, "exportAllLODs")
 		layout.prop(self, "exportBlendShapes", text="SF6: Preserve Source Data")
-		if self.targetCollection in bpy.data.collections and bpy.data.collections[self.targetCollection].get('SF6PreserveSource') and self.exportBlendShapes:
+		if self.filename_ext == ".230110883":
+			row = layout.row()
+			row.enabled = self.exportBlendShapes and self.targetCollection in bpy.data.collections and bool(bpy.data.collections[self.targetCollection].get('SF6PreserveSource'))
+			row.prop(self, "sf6HybridPreserve")
+			if self.sf6HybridPreserve:
+				layout.label(text="Rebuilds geometry/rig; keeps unchanged LOD0 shape deltas.", icon='INFO')
+				layout.label(text="Unmatched parts/vertices have zero deltas; lower LODs are lost.")
+				if self.selectedOnly:
+					layout.label(text="Exports only selected LOD0 mesh parts.")
+		if self.targetCollection in bpy.data.collections and bpy.data.collections[self.targetCollection].get('SF6PreserveSource') and self.exportBlendShapes and not self.sf6HybridPreserve:
 			layout.label(text="Keeps all source LODs and deformation tables.", icon='INFO')
 			layout.label(text="Existing vertex/shape edits and deletions only.")
+			layout.label(text="Uses embedded source skeleton; Blender rig edits are ignored.")
 		#hasREToolbox = hasattr(bpy.types, "OBJECT_PT_re_tools_quick_export_panel")
 		row = layout.row()
 		#row.enabled = hasREToolbox
@@ -1102,6 +1117,9 @@ class ExportREMesh(Operator, ExportHelper):
 		layout.prop(self, "exportBoundingBoxes")
 	
 	def execute(self, context):
+		if self.sf6HybridPreserve and not self.exportBlendShapes:
+			self.report({'ERROR'}, 'SF6 Hybrid Shape Export requires Preserve Source Data to be enabled.')
+			return {'CANCELLED'}
 		# Legacy batch callers (RE Toolbox) omit the SF6 preservation argument.
 		# Use the independent batch choice only for calls without a dialog/value.
 		legacyBatchMode = False
@@ -1111,7 +1129,7 @@ class ExportREMesh(Operator, ExportHelper):
 				legacyBatchMode = True
 				self.exportBlendShapes = batch_preserve_source(collection)
 				print(f"SF6 legacy export: batch Preserve Source Data = {self.exportBlendShapes}")
-		options = {"targetCollection":self.targetCollection,"selectedOnly":self.selectedOnly,"exportAllLODs":self.exportAllLODs,"exportBlendShapes":self.exportBlendShapes,"rotate90":self.rotate90,"useBlenderMaterialName":self.useBlenderMaterialName,"preserveBoneMatrices":self.preserveBoneMatrices,"exportBoundingBoxes":self.exportBoundingBoxes,"autoSolveRepeatedUVs":self.autoSolveRepeatedUVs,"preserveSharpEdges":self.preserveSharpEdges}
+		options = {"targetCollection":self.targetCollection,"selectedOnly":self.selectedOnly,"exportAllLODs":self.exportAllLODs,"exportBlendShapes":self.exportBlendShapes,"sf6HybridPreserve":self.sf6HybridPreserve,"rotate90":self.rotate90,"useBlenderMaterialName":self.useBlenderMaterialName,"preserveBoneMatrices":self.preserveBoneMatrices,"exportBoundingBoxes":self.exportBoundingBoxes,"autoSolveRepeatedUVs":self.autoSolveRepeatedUVs,"preserveSharpEdges":self.preserveSharpEdges}
 		try:
 			meshVersion = int(os.path.splitext(self.filepath)[1].replace(".",""))
 		except:
@@ -1135,7 +1153,10 @@ class ExportREMesh(Operator, ExportHelper):
 			self.report({'ERROR'}, str(error))
 			return {'CANCELLED'}
 		if success:
-			self.report({"INFO"},"Exported RE Mesh successfully.")
+			if self.sf6HybridPreserve:
+				report_hybrid_export(self, options.get('_sf6HybridReport'))
+			else:
+				self.report({"INFO"},"Exported RE Mesh successfully.")
 			if self.targetCollection in bpy.data.collections:
 				bpy.data.collections[self.targetCollection]["BatchExport_path"] = self.filepath
 				bpy.data.collections[self.targetCollection]["BatchExport_exportAllLODs"] = self.exportAllLODs

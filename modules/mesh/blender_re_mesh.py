@@ -973,6 +973,78 @@ def splitSharpEdges():
 def exportREMeshFile(filePath,options):
 	sourceCollection = bpy.data.collections.get(options.get('targetCollection', ''))
 	isSF6Source = sourceCollection is not None and sourceCollection.get('SF6PreserveSource')
+	if options.get('sf6HybridPreserve', False):
+		# This is an explicit LOD0 rebuild with compatible source shape data grafted
+		# back in. It must never become an implicit source-mode fallback.
+		import base64
+		import binascii
+		import hashlib
+		import tempfile
+		import zlib
+		from .sf6_hybrid import build_hybrid_mesh
+		from .sf6_source import SOURCE
+		options.pop('_sf6HybridReport', None)
+		if not options.get('exportBlendShapes', True):
+			raise ValueError('SF6 Hybrid Shape Export requires Preserve Source Data to be enabled.')
+		if not filePath.endswith('.mesh.230110883'):
+			raise ValueError('SF6 hybrid export can only write mesh.230110883')
+		if not isSF6Source:
+			raise ValueError('SF6 hybrid export needs a collection imported with Preserve Source + Shape Keys.')
+		selected_objects = tuple(bpy.context.selected_objects) if options.get('selectedOnly') else None
+		if selected_objects is not None and not any(
+				obj in selected_objects and obj.type == 'MESH' and
+				not obj.get('~TYPE') and not obj.get('MeshExportExclude')
+				for obj in sourceCollection.all_objects):
+			raise ValueError('No selected source mesh objects in the target collection.')
+		if options.get('rotate90', True) != sourceCollection.get('SF6SourceRotate'):
+			raise ValueError('Use the same axis conversion setting as the preserved source import.')
+		text = bpy.data.texts.get(sourceCollection.get(SOURCE, ''))
+		if text is None:
+			raise ValueError('Missing embedded SF6 source. Re-import the original mesh.')
+		try:
+			source_bytes = zlib.decompress(base64.b64decode(text.as_string()))
+		except (ValueError, binascii.Error, zlib.error) as error:
+			raise ValueError('Embedded SF6 source could not be decoded.') from error
+		if hashlib.sha256(source_bytes).hexdigest() != sourceCollection.get('SF6SourceSHA256'):
+			raise ValueError('Embedded SF6 source hash mismatch')
+		output_dir = os.path.dirname(os.path.abspath(filePath))
+		if not os.path.isdir(output_dir):
+			raise ValueError('Choose an existing output directory for SF6 hybrid export.')
+		staged_dir = tempfile.mkdtemp(prefix='.sf6-hybrid-', dir=output_dir)
+		ordinary_path = os.path.join(staged_dir, 'ordinary.mesh.230110883')
+		staged_output = os.path.join(staged_dir, 'hybrid.mesh.230110883')
+		try:
+			ordinary_options = dict(options, sf6HybridPreserve=False,
+									exportBlendShapes=False, exportAllLODs=False,
+									selectedOnly=bool(options.get('selectedOnly')))
+			ordinary_options.pop('_sf6HybridReport', None)
+			if not exportREMeshFile(ordinary_path, ordinary_options):
+				raise ValueError('Ordinary LOD0 rebuild failed; the destination was not changed.')
+			with open(ordinary_path, 'rb') as ordinary_file:
+				ordinary_bytes = ordinary_file.read()
+			hybrid_bytes, report = build_hybrid_mesh(
+				source_bytes, ordinary_bytes, sourceCollection, selected_objects=selected_objects)
+			if not isinstance(hybrid_bytes, bytes) or not hybrid_bytes.startswith(b'MESH'):
+				raise ValueError('SF6 hybrid builder returned an invalid mesh.')
+			with open(staged_output, 'wb') as hybrid_file:
+				hybrid_file.write(hybrid_bytes)
+				hybrid_file.flush()
+				os.fsync(hybrid_file.fileno())
+			os.replace(staged_output, filePath)
+			options['_sf6HybridReport'] = report
+			return True
+		finally:
+			for temporary_path in (ordinary_path, staged_output):
+				try:
+					os.unlink(temporary_path)
+				except FileNotFoundError:
+					pass
+				except OSError as error:
+					print(f'SF6 hybrid temporary file could not be removed: {error}')
+			try:
+				os.rmdir(staged_dir)
+			except OSError as error:
+				print(f'SF6 hybrid temporary directory could not be removed: {error}')
 	if options.get('exportBlendShapes', True) and (filePath.endswith('.mesh.230110883') or isSF6Source):
 		if not filePath.endswith('.mesh.230110883'):
 			raise ValueError('SF6 source mode can only export mesh.230110883')
@@ -1863,5 +1935,4 @@ def exportREMeshFile(filePath,options):
 	if showWarningMessage:
 		showMessageBox("Warnings occured during export. Check Window > Toggle System Console for details.",title = "Mesh Export Warning", icon = "ERROR")
 	print("\033[92m__________________________________\nRE Mesh export finished.\033[0m")
-	return True	
-	
+	return True
