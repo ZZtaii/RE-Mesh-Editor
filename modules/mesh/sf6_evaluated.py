@@ -408,12 +408,73 @@ def _validate_multires_external(original, modifier):
     return str(path)
 
 
+def _transfers_custom_normals(modifier):
+    return (modifier.type == 'DATA_TRANSFER' and modifier.show_viewport and
+            modifier.use_loop_data and 'CUSTOM_NORMAL' in modifier.data_types_loops)
+
+
+def _validate_normal_transfer_prefixes(capture, owned_meshes):
+    """Check corner mapping where each transfer reads its destination mesh.
+
+    Blender can silently leave normals unchanged for an invalid donor or a
+    topology mapping with different corner counts. A generator before the
+    transfer changes that count, so checking the editable mesh would be wrong.
+    Only the private capture's suffix is temporarily disabled here.
+    """
+    modifiers = tuple(capture.modifiers)
+    for index, modifier in enumerate(modifiers):
+        if not _transfers_custom_normals(modifier):
+            continue
+        # Keep the transfer dependency active while reading the donor. Hidden
+        # or excluded donors can fall back to unevaluated base data once that
+        # dependency is disabled, even when their Object is marked evaluated.
+        capture.data.update()
+        capture.update_tag(refresh={'OBJECT', 'DATA'})
+        bpy.context.view_layer.update()
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+        donor = modifier.object.evaluated_get(depsgraph)
+        _need(donor.is_evaluated and donor.type == 'MESH' and donor.data is not None,
+              'Data Transfer normal source is unavailable for ' + modifier.name +
+              '; make sure Blender can evaluate its mesh source')
+        donor_corners = len(donor.data.loops)
+        _need(donor_corners > 0,
+              'Data Transfer normal source has no faces for ' + modifier.name)
+        if modifier.loop_mapping != 'TOPOLOGY':
+            continue
+        prefix = None
+        visibility = [(item, item.show_viewport) for item in modifiers[index:]]
+        try:
+            for item, _ in visibility:
+                item.show_viewport = False
+            prefix = _evaluate_mesh(capture, owned_meshes)
+            _need(len(prefix.loops) == donor_corners,
+                  'Data Transfer normal topology mapping has different corner counts for ' +
+                  modifier.name + '; use a spatial face mapping or match the evaluated meshes')
+        finally:
+            for item, visible in visibility:
+                item.show_viewport = visible
+            if prefix is not None:
+                owned_meshes.remove(prefix)
+                bpy.data.meshes.remove(prefix)
+
+
 def _active_modifier_report(original):
     result = []
     for modifier in original.modifiers:
         if modifier.type == 'ARMATURE' or not modifier.show_viewport:
             continue
         entry = {'name': modifier.name, 'type': modifier.type}
+        if _transfers_custom_normals(modifier):
+            donor = modifier.object
+            _need(donor is not None and donor != original and donor.type == 'MESH',
+                  'Data Transfer custom normals need a separate mesh source on ' + original.name)
+            entry.update(custom_normals=True, normal_source=donor.name,
+                         normal_mapping=modifier.loop_mapping, mix_mode=modifier.mix_mode,
+                         mix_factor=modifier.mix_factor, vertex_group=modifier.vertex_group,
+                         invert_vertex_group=modifier.invert_vertex_group,
+                         use_object_transform=modifier.use_object_transform,
+                         use_max_distance=modifier.use_max_distance,
+                         max_distance=modifier.max_distance)
         if modifier.type == 'MULTIRES':
             # Object-mode export reads the viewport level, not the separately
             # chosen sculpt/render levels. The private mesh retains stored
@@ -490,6 +551,7 @@ def _sample_object(original, capture_collection, snapshot_collection,
         key.slider_min = min(key.slider_min, 0.0)
         key.slider_max = max(key.slider_max, 1.0)
         key.value = 0.0
+    _validate_normal_transfer_prefixes(capture, owned_meshes)
     basis = _evaluate_mesh(capture, owned_meshes)
     basis_topology = _topology(basis)
     key_coordinates = []

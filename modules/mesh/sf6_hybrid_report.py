@@ -60,6 +60,16 @@ def format_hybrid_report(report):
                     f"{part['source_vertices']} editable -> {part['evaluated_vertices']} evaluated vertices."
                 )
                 for modifier in modifiers:
+                    if modifier['type'] == 'DATA_TRANSFER' and modifier.get('custom_normals'):
+                        mask = (f"; mask {modifier['vertex_group']}" +
+                                (' (inverted)' if modifier.get('invert_vertex_group') else '')
+                                if modifier.get('vertex_group') else '')
+                        lines.append(
+                            f"{modifier['name']}: Custom Normals from {modifier['normal_source']}; "
+                            f"mapping {modifier['normal_mapping']}, {modifier['mix_mode']} "
+                            f"factor {modifier['mix_factor']:g}{mask}. "
+                            'The source uses its current scene state; final Basis normals are exported.'
+                        )
                     if modifier['type'] == 'MULTIRES' and 'viewport_level' in modifier:
                         level_note = (
                             f"{modifier['name']}: Multires viewport level {modifier['viewport_level']} "
