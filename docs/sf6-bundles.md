@@ -19,10 +19,19 @@ The examples use one character with two hairstyles, **Braid** and **Bangs**.
 2. Open the exporter and set **Parent Directory** to your Fluffy `Games\SF6\Mods`
    folder. Every export in these recipes goes straight into it.
 3. Fill in **Author** and **Version** once. The dialog remembers the mod metadata
-   and grouping fields for the next export, which makes these recipes short.
+   and grouping fields for the next export, including after a failed attempt,
+   which makes these recipes short.
 
-The mesh you select decides where the mod installs. Naming a folder "C2" does not
-turn a C1 mesh into costume 2. Slots are **00 Head, 01 Body, 02 Hair**, and costume
+If Braid and Bangs are separate objects in the same mesh collection, select all
+mesh objects for the current variant in Object Mode and enable **Selected Objects Only**
+for each `Mesh Mod` export. Select at least one LOD0 mesh. The option limits the
+mesh inside that variant's mod folder; with it off, the exporter writes the whole
+collection. Visibility alone does not select an object. `Menu Only` creates no
+mesh, so the selection option has no effect on menu exports.
+
+The chosen mesh collection's imported filename decides where the mod installs.
+Naming a folder "C2" does not turn a C1 mesh into costume 2. Slots are
+**00 Head, 01 Body, 02 Hair**, and costume
 folders keep three digits: `001`, not `01`.
 
 Prepare each edited mesh in Blender first. The planner shows example fields and
@@ -52,6 +61,9 @@ Hair Collection
 **Export 2.** Select the Bangs mesh and reopen the exporter. Change two fields:
 **Mod Folder Name** to `Ingrid C1 Bangs` and **Display Name** to `Bangs`. Leave
 **Bundle Name** exactly as it was — that is what groups them.
+
+Enable **Selected Objects Only** for the second mesh export if the two hairstyles
+share one collection, and select the Bangs parts before exporting.
 
 That is the whole recipe. A third variant is the same again with a new folder name
 and display name.
@@ -143,6 +155,12 @@ anything else in the folder alone.
   Each becomes its own category line on top of the character category.
 - **Description** breaks lines with a literal `\n` — a backslash, not a slash.
 - **Preview Image** copies a PNG or JPEG into the mod folder. Menus can have one too.
+- **Selected Objects Only** limits a `Mesh Mod` to selected mesh objects in the
+  chosen collection. Strict SF6 source preservation keeps the selected parts'
+  original deformation data; hybrid shape export outputs selected LOD0 parts
+  only. With source preservation, an empty selection or one without LOD0 is
+  rejected before an existing mod is replaced. The armature does not need to
+  be selected.
 - **Create Parent Menu** is a shortcut for naming a Parent Mod that does not exist
   yet; it creates that menu in the same export. Following the recipes above you
   never need it, because each menu is made before anything points at it. An

@@ -12,10 +12,23 @@ from bpy.props import (StringProperty,
                        EnumProperty,
                        )
 from .blender_re_mesh import solveRepeatedUVs
-from .re_mesh_propertyGroups import ExporterNodePropertyGroup,MESH_UL_REExporterList
+from .re_mesh_propertyGroups import (ExporterNodePropertyGroup, MESH_UL_REExporterList,
+	getBatchMeshWeightLimitDefault, getBatchMeshWeightLimit, setBatchMeshWeightLimit)
 from .sf6_export_settings import BATCH_PRESERVE_SOURCE, batch_preserve_source
 from ..gen_functions import splitNativesPath
 from ..blender_utils import showErrorMessageBox
+
+
+_BATCH_MESH_FIX_DEFAULTS = {
+	"autoSolveRepeatedUVs": True,
+	"splitLoopVertices": True,
+	"normalizeWeights": True,
+	"limitTotal": False,
+	"limitTotalCount": 8,
+	"shapeKeyExportMode": "MODE0",
+}
+
+
 class WM_OT_DeleteLoose(Operator):
 	bl_label = "Delete Loose Geometry"
 	bl_idname = "re_mesh.delete_loose"
@@ -176,7 +189,7 @@ class WM_OT_CreateMeshCollection(Operator):
 
 EXPORTER_WINDOW_SIZE = 800
 SPLIT_FACTOR = .4
-BATCH_EXPORT_BUILD = "SF6.5"
+BATCH_EXPORT_BUILD = "0.68"
 
 def update_checkAllItems(self, context):
 	if self.checkAllItems == True:
@@ -280,6 +293,19 @@ def populateCollectionList(itemList,collection,recursionLevel,parentName):
 		if collection["~TYPE"] == "RE_MESH_COLLECTION":
 			item.exportType = "MESH"
 			item.exportBlendShapes = batch_preserve_source(collection)
+			# Older collections may have only some of the new saved settings.
+			for name, default in _BATCH_MESH_FIX_DEFAULTS.items():
+				if name == "limitTotalCount":
+					default = getBatchMeshWeightLimitDefault(item.path)
+				try:
+					value = collection.get("BatchExport_" + name, default)
+					if name == "limitTotalCount":
+						setBatchMeshWeightLimit(item, value, "BatchExport_" + name in collection)
+					else:
+						setattr(item, name, value)
+				except (TypeError, ValueError) as err:
+					setattr(item, name, default)
+					print(f"Invalid saved batch setting {name} for {item.name}: {err}")
 			
 			if "BatchExport_exportAllLODs" in collection:
 				try:
@@ -314,6 +340,8 @@ def populateCollectionList(itemList,collection,recursionLevel,parentName):
 							item.path = determineExportPath(split[0],item.exportType,assetPath.replace("/",os.sep),bpy.context.scene)
 				except Exception as err:
 					print(f"Batch Export: Cannot auto determine path for {item.name}: {str(err)}")
+		if item.exportType == "MESH" and "BatchExport_limitTotalCount" not in collection:
+			setBatchMeshWeightLimit(item, getBatchMeshWeightLimitDefault(item.path))
 class WM_OT_REBatchExporter(Operator):
 	bl_label = f"RE Batch Exporter ({BATCH_EXPORT_BUILD})"
 	bl_idname = "re_mesh.batch_exporter"
@@ -377,6 +405,7 @@ class WM_OT_REBatchExporter(Operator):
 				continue
 			if exportItem.exportType == "MESH":
 				try:
+					weightLimit = getBatchMeshWeightLimit(exportItem)
 					print(f"{exportItem.name}: SF6 Preserve Source Data = {bool(exportItem.exportBlendShapes)}")
 					result = bpy.ops.re_mesh.exportfile(
 						filepath = exportItem.path,
@@ -385,6 +414,11 @@ class WM_OT_REBatchExporter(Operator):
 						exportBlendShapes = exportItem.exportBlendShapes,
 						autoSolveRepeatedUVs = exportItem.autoSolveRepeatedUVs,
 						preserveSharpEdges = exportItem.preserveSharpEdges,
+						splitLoopVertices = getattr(exportItem, "splitLoopVertices", True),
+						normalizeWeights = getattr(exportItem, "normalizeWeights", True),
+						limitTotal = getattr(exportItem, "limitTotal", False),
+						limitTotalCount = weightLimit,
+						shapeKeyExportMode = getattr(exportItem, "shapeKeyExportMode", "MODE0"),
 						rotate90 = exportItem.rotate90,
 						useBlenderMaterialName = exportItem.useBlenderMaterialName,
 						preserveBoneMatrices = exportItem.preserveBoneMatrices,
@@ -394,7 +428,10 @@ class WM_OT_REBatchExporter(Operator):
 						failCount += 1
 						meshFailures.append(f"{exportItem.name}: Mesh export was cancelled. See the system console for details.")
 					else:
-						bpy.data.collections[exportItem.name][BATCH_PRESERVE_SOURCE] = bool(exportItem.exportBlendShapes)
+						collection = bpy.data.collections[exportItem.name]
+						collection[BATCH_PRESERVE_SOURCE] = bool(exportItem.exportBlendShapes)
+						for name, default in _BATCH_MESH_FIX_DEFAULTS.items():
+							collection["BatchExport_" + name] = weightLimit if name == "limitTotalCount" else getattr(exportItem, name, default)
 				except Exception as err:
 					print(f"Mesh Export Failed: {str(err)}")
 					failCount += 1
@@ -586,7 +623,10 @@ class WM_OT_REBatchExporter(Operator):
 					row.label(text="Path is empty or missing the file version number on the end. ",icon = "ERROR")
 				if item.exportType == "MESH":
 					box.prop(item, "exportAllLODs")
-					box.prop(item, "exportBlendShapes")
+					if item.path.endswith('.241111606'):
+						box.prop(item, "shapeKeyExportMode")
+					else:
+						box.prop(item, "exportBlendShapes")
 					collection = bpy.data.collections.get(item.name)
 					if item.path.endswith('.mesh.230110883') or (collection and collection.get('SF6PreserveSource')):
 						if item.exportBlendShapes:
@@ -598,6 +638,13 @@ class WM_OT_REBatchExporter(Operator):
 							box.label(text="Original SF6 deformation data is not kept.")
 					box.prop(item,"autoSolveRepeatedUVs")
 					box.prop(item,"preserveSharpEdges")
+					box.prop(item,"splitLoopVertices")
+					row = box.row(align=True)
+					row.prop(item,"limitTotal")
+					limitRow = row.row(align=True)
+					limitRow.enabled = item.limitTotal
+					limitRow.prop(item,"limitTotalCount")
+					box.prop(item,"normalizeWeights")
 					box.prop(item, "rotate90")
 					box.prop(item, "useBlenderMaterialName")
 					box.prop(item, "preserveBoneMatrices")

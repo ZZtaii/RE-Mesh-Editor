@@ -1,14 +1,14 @@
 #Author: NSA Cloud
 bl_info = {
 	"name": "RE Mesh Editor",
-	"author": "NSA Cloud",
-	"version": (0, 66),
+	"author": "ZZtaii",
+	"version": (0, 68),
 	"blender": (4, 3, 2),
 	"location": "File > Import-Export",
 	"description": "Import and export RE Engine Mesh files natively into Blender. No Noesis required.",
 	"warning": "",
-	"wiki_url": "https://github.com/NSACloud/RE-Mesh-Editor",
-	"tracker_url": "https://github.com/NSACloud/RE-Mesh-Editor/issues",
+	"wiki_url": "https://github.com/ZZtaii/RE-Mesh-Editor",
+	"tracker_url": "https://github.com/ZZtaii/RE-Mesh-Editor/issues",
 	"category": "Import-Export"}
 
 import bpy
@@ -22,7 +22,8 @@ from .modules.gen_functions import textColors,raiseWarning,getFolderSize,formatB
 from .modules.blender_utils import operator_exists
 #mesh
 from .modules.mesh.file_re_mesh import meshFileVersionToGameNameDict
-from .modules.mesh.blender_re_mesh import importREMeshFile,exportREMeshFile
+from .modules.mesh.blender_re_mesh import importREMeshFile,exportREMeshFile,getMeshWeightLimits
+from .modules.mesh.sf6_hybrid_report import report_hybrid_export
 from .modules.mesh.sf6_mod_folder_operator import ExportSF6ModFolder
 from .modules.mesh.sf6_export_settings import BATCH_PRESERVE_SOURCE, batch_preserve_source
 from .modules.mesh.re_mesh_propertyGroups import (
@@ -165,6 +166,26 @@ from .modules.workspace.ui_re_mod_workspace_panels import (
 os.system("color")#Enable console colors
 
 
+MESH_EXPORT_VERSION_ITEMS = [
+	(".1808282334", "Devil May Cry 5", "Devil May Cry 5"),
+	(".1808312334", "Resident Evil 2", "Resident Evil 2"),
+	(".1902042334", "Resident Evil 3", "Resident Evil 3"),
+	(".2101050001", "Resident Evil 8", "Resident Evil 8"),
+	(".2109108288", "Resident Evil 2 / 3 Ray Tracing", "Resident Evil 2/3 Ray Tracing Version"),
+	(".220128762", "Resident Evil 7 Ray Tracing", "Resident Evil 7 Ray Tracing Version"),
+	(".2109148288", "Monster Hunter Rise", "Monster Hunter Rise"),
+	(".221108797", "Resident Evil 4", "Resident Evil 4"),
+	(".230110883", "Street Fighter 6", "Street Fighter 6"),
+	(".260421070", "Dragon's Dogma 2", "Dragon's Dogma 2"),
+	(".240306278", "Kunitsu-Gami", "Kunitsu-Gami"),
+	(".240424828", "Dead Rising", "Dead Rising"),
+	(".240827123", "Onimusha 2", "Onimusha 2"),
+	(".241111606", "Monster Hunter Wilds", "Monster Hunter Wilds"),
+	(".250925211", "Resident Evil 9", "Resident Evil 9"),
+	(".250604100", "Monster Hunter Stories 3", "Monster Hunter Stories 3"),
+	(".260209350", "Onimusha: Way of the Sword", "Onimusha: Way of the Sword (retail/current)"),
+]
+
 #Used to circumvent the issue of properties not being able to used as defaults for other properties at startup
 def setMeshImportDefaults(self):
 	self.clearScene = bpy.context.preferences.addons[__name__].preferences.default_clearScene
@@ -187,12 +208,17 @@ def setMeshImportDefaults(self):
 	#print("RE Mesh Editor: Loaded Default Import Settings")
 	
 def setMeshExportDefaults(self):
+	self.filename_ext = bpy.context.preferences.addons[__name__].preferences.default_meshVersion
 	self.selectedOnly = bpy.context.preferences.addons[__name__].preferences.default_selectedOnly
 	self.exportAllLODs = bpy.context.preferences.addons[__name__].preferences.default_exportAllLODs
 	self.exportBlendShapes = bpy.context.preferences.addons[__name__].preferences.default_exportBlendShapes
 	self.rotate90 = bpy.context.preferences.addons[__name__].preferences.default_rotate90export
 	self.autoSolveRepeatedUVs = bpy.context.preferences.addons[__name__].preferences.default_autoSolveRepeatedUVs
 	self.preserveSharpEdges = bpy.context.preferences.addons[__name__].preferences.default_preserveSharpEdges
+	self.splitLoopVertices = bpy.context.preferences.addons[__name__].preferences.default_splitLoopVertices
+	self.limitTotal = bpy.context.preferences.addons[__name__].preferences.default_limitTotal
+	self.normalizeWeights = bpy.context.preferences.addons[__name__].preferences.default_normalizeWeights
+	self.limitTotalCount = getMeshExportDefaultWeightLimit(self.filename_ext)
 	self.useBlenderMaterialName = bpy.context.preferences.addons[__name__].preferences.default_useBlenderMaterialName
 	self.preserveBoneMatrices = bpy.context.preferences.addons[__name__].preferences.default_preserveBoneMatrices
 	self.exportBoundingBoxes = bpy.context.preferences.addons[__name__].preferences.default_exportBoundingBoxes
@@ -289,6 +315,7 @@ class ChunkPathPropertyGroup(bpy.types.PropertyGroup):
 		("MHWILDS", "Monster Hunter Wilds", ""),
 		("PRAG", "Pragmata", ""),
 		("MHS3", "Monster Hunter Stories 3", ""),
+		("ONIWOTS", "Onimusha: Way of the Sword", ""),
 		("RE9", "Resident Evil 9", ""),
 		]
     )
@@ -535,6 +562,11 @@ class REMeshPreferences(AddonPreferences):
 	   default = False)
 	
 	#Default export options
+	default_meshVersion : EnumProperty(
+	   name = "Mesh Version",
+	   description = "Default mesh version selected when exporting",
+	   items = MESH_EXPORT_VERSION_ITEMS,
+	   default = ".1808282334")
 	default_selectedOnly : BoolProperty(
 	   name = "Selected Objects Only",
 	   description = "Limit export to selected objects",
@@ -560,6 +592,18 @@ class REMeshPreferences(AddonPreferences):
 	   name = "Split Sharp Edges",
 	   description = "Edge splits all edges marked as sharp to preserve them on the exported mesh.\nNOTE: This will modify the exported mesh",
 	   default = True)
+	default_splitLoopVertices : BoolProperty(
+	   name = "Split Vertices For Corner Attributes",
+	   description = "Creates extra exported vertices when loop/corner normals, tangents, UVs, or colors differ. Enable this to preserve hard normals and other data. Disable it to keep 1:1 vertex per Blender vertex.",
+	   default = True)
+	default_limitTotal : BoolProperty(
+	   name = "Limit Total",
+	   description = "Keep in mind, you will probably want to enable the setting for normalize weights if you enable this setting. Otherwise, limit total manually/without this setting to preserve unnormalized weights.",
+	   default = False)
+	default_normalizeWeights : BoolProperty(
+	   name = "Normalize Weights",
+	   description = "Normalize each set of vertex weights to 1.0 automatically/on export.",
+	   default = True)
 	default_useBlenderMaterialName : BoolProperty(
 	   name = "Use Blender Material Names",
 	   description = "If left unchecked, the exporter will get the material names to be used from the end of each object name. For example, if a mesh is named LOD_0_Group_0_Sub_0__Shirts_Mat, the material name is Shirts_Mat. If this option is enabled, the material name will instead be taken from the first material assigned to the object",
@@ -580,11 +624,14 @@ class REMeshPreferences(AddonPreferences):
 		col1 = split.column()
 		col2 = split.column()
 		col3 = split.column()
-		op = col2.operator(
-        'wm.url_open',
-        text='Donate on Ko-fi',
-        icon='FUND'
-        )
+		col2.operator('wm.url_open', text='Donate on Ko-fi', icon='FUND').url = 'https://ko-fi.com/nsacloud'
+		col3.label(text='(NSA Cloud - Original Creator)')
+		split = layout.split(factor = .3)
+		split.column()
+		col2 = split.column()
+		col3 = split.column()
+		col2.operator('wm.url_open', text='Buy me a coffee', icon='URL').url = 'https://www.patreon.com/ZZtai/posts/buy-me-coffee-167011360'
+		col3.label(text='(ZZtaii - Fork Maintainer)')
 		layout.prop(self, "dragDropImportOptions")
 		layout.prop(self, "showConsole")
 		layout.prop(self, "useDDS")
@@ -613,8 +660,6 @@ class REMeshPreferences(AddonPreferences):
 		
 		box.operator("re_mesh.open_texture_cache_folder")
 		box.operator("re_mesh.clear_texture_cache_folder")
-		
-		op.url = 'https://ko-fi.com/nsacloud'
 		
 		#Import defaults
 		row = layout.row()
@@ -647,10 +692,14 @@ class REMeshPreferences(AddonPreferences):
 		column = split.column()
 		column2 = split.column()
 		if self.showExportOptions:
+			column2.prop(self, "default_meshVersion")
 			column2.prop(self, "default_selectedOnly")
 			column2.prop(self, "default_exportAllLODs")
 			column2.prop(self,"default_autoSolveRepeatedUVs")
 			column2.prop(self,"default_preserveSharpEdges")
+			column2.prop(self,"default_splitLoopVertices")
+			column2.prop(self,"default_limitTotal")
+			column2.prop(self,"default_normalizeWeights")
 			column2.prop(self, "default_rotate90export")
 			column2.prop(self, "default_useBlenderMaterialName")
 			column2.prop(self, "default_preserveBoneMatrices")
@@ -935,6 +984,17 @@ def update_targetMeshCollection(self,context):
 		#print(browserSpace.params.filename)
 		if ".mesh" in self.targetCollection:
 			browserSpace.params.filename = self.targetCollection.split(".mesh")[0]+".mesh" + self.filename_ext
+def getMeshExportDefaultWeightLimit(filenameExt):
+	try:
+		meshVersion = int(str(filenameExt).replace(".", ""))
+	except:
+		return 8
+	gameName = meshFileVersionToGameNameDict.get(meshVersion)
+	return getMeshWeightLimits(gameName)[1]
+
+def updateMeshExportWeightLimit(self, context):
+	self.limitTotalCount = getMeshExportDefaultWeightLimit(self.filename_ext)
+
 class ExportREMesh(Operator, ExportHelper):
 	'''Export RE Engine Mesh File'''
 	bl_idname = "re_mesh.exportfile"
@@ -946,25 +1006,9 @@ class ExportREMesh(Operator, ExportHelper):
 	filename_ext: EnumProperty(
 		name="",
 		description="Set which game to export the mesh for",
-		items= [
-				(".1808282334", "Devil May Cry 5", "Devil May Cry 5"), 
-				(".1808312334", "Resident Evil 2", "Resident Evil 2"),
-				(".1902042334", "Resident Evil 3", "Resident Evil 3"),
-				(".2101050001", "Resident Evil 8", "Resident Evil 8"),
-				(".2109108288", "Resident Evil 2 / 3 Ray Tracing", "Resident Evil 2/3 Ray Tracing Version"),
-				(".220128762", "Resident Evil 7 Ray Tracing", "Resident Evil 7 Ray Tracing Version"),
-			    (".2109148288", "Monster Hunter Rise", "Monster Hunter Rise"),
-				(".221108797", "Resident Evil 4", "Resident Evil 4"),
-				(".230110883", "Street Fighter 6", "Street Fighter 6"),
-				(".240423143", "Dragon's Dogma 2", "Dragon's Dogma 2"),
-				(".240306278", "Kunitsu-Gami", "Kunitsu-Gami"),
-				(".240424828", "Dead Rising", "Dead Rising"),
-				(".240827123", "Onimusha 2", "Onimusha 2"),
-				(".241111606", "Monster Hunter Wilds", "Monster Hunter Wilds"),
-				#(".250925211", "Resident Evil 9 / Pragmata", "Resident Evil 9 / Pragmata"),
-				(".250925211", "Resident Evil 9", "Resident Evil 9"),
-				(".250604100", "Monster Hunter Stories 3", "Monster Hunter Stories 3"),
-			   ]
+		update=updateMeshExportWeightLimit,
+		items=MESH_EXPORT_VERSION_ITEMS,
+		default=".1808282334",
 		)
 	targetCollection: bpy.props.StringProperty(
 		name="",
@@ -985,6 +1029,10 @@ class ExportREMesh(Operator, ExportHelper):
 	   name = "SF6: Preserve Source Data",
 	   description = "Preserve supported SF6 source data; requires an original imported with Preserve Source + Shape Keys. Disable explicitly to use ordinary export",
 	   default = True)
+	sf6HybridPreserve : BoolProperty(
+	   name = "SF6: Hybrid Shape Export (LOD0)",
+	   description = "Rebuild LOD0 geometry and rig, evaluate stable modifiers on the Basis and corrective keys, and retain compatible source shapes. Requires embedded SF6 source; lower LODs are lost",
+	   default = False)
 	rotate90 : BoolProperty(
 	   name = "Convert Z Up To Y Up",
 	   description = "Rotates objects 90 degrees for export. Leaving this option enabled is recommended",
@@ -997,6 +1045,46 @@ class ExportREMesh(Operator, ExportHelper):
 	   name = "Split Sharp Edges",
 	   description = "Edge splits all edges marked as sharp to preserve them on the exported mesh.\nNOTE: This will modify the exported mesh",
 	   default = True)
+	splitLoopVertices : BoolProperty(
+	   name = "Split Vertices For Corner Attributes",
+	   description = "Creates extra exported vertices when loop/corner normals, tangents, UVs, or colors differ. Enable this to preserve hard normals and other data. Disable it to keep 1:1 vertex per Blender vertex.",
+	   default = True)
+	limitTotal : BoolProperty(
+	   name = "Limit Total",
+	   description = "Keep in mind, you will probably want to enable the setting for normalize weights if you enable this setting. Otherwise, limit total manually/without this setting to preserve unnormalized weights.",
+	   default = False)
+	limitTotalCount : IntProperty(
+	   name = "Max Weights",
+	   description = "The game's max supported weight is default here.",
+	   default = 8,
+	   min = 1,
+	   max = 32)
+	normalizeWeights : BoolProperty(
+	   name = "Normalize Weights",
+	   description = "Normalize each set of vertex weights to 1.0 automatically/on export.",
+	   default = True)
+	shapeKeyExportMode : EnumProperty(
+		name = "Export Shapekeys?",
+		description = "Choose whether and how Blender shape keys are exported as blendshapes",
+		items = [
+			(
+				"NO",
+				"No",
+				"Do not export Blender shape keys or Wilds blendshape data. Alternatevly, if exporting shapekeys, you can use the prefix 'DUMMY_' for shapekey names to exclude export of them"
+			),
+			(
+				"MODE0",
+				"Mode 0",
+				"This keeps shading 1:1 between having or not having blendshapes at all. But may introduce bad shading depending on the runtime settings of the mesh. This is recommended for script mods to take advantage of if they are custom meshes or heavily edited vanilla meshes."
+			),
+			(
+				"MODE1",
+				"Mode 1",
+				"This behaves more so like vanilla meshes, just by having blendshapes (wether geometry is moved or not) shading is slightly different between not having them at all. Recommended for retaining vanilla data. "
+			),
+		],
+		default = "MODE0"
+	)
 	useBlenderMaterialName : BoolProperty(
 	   name = "Use Blender Material Names",
 	   description = "If left unchecked, the exporter will get the material names to be used from the end of each object name. For example, if a mesh is named LOD_0_Group_0_Sub_0__Shirts_Mat, the material name is Shirts_Mat. If this option is enabled, the material name will instead be taken from the first material assigned to the object",
@@ -1014,9 +1102,9 @@ class ExportREMesh(Operator, ExportHelper):
 			setMeshExportDefaults(self)
 			
 		if context.scene.get("REMeshLastImportedMeshVersion",0) in meshFileVersionToGameNameDict:
-			if context.scene["REMeshLastImportedMeshVersion"] == 231011879:
+			if context.scene["REMeshLastImportedMeshVersion"] in (231011879, 240423143):
 				#DD2 version update fix
-				context.scene["REMeshLastImportedMeshVersion"] = 240423143
+				context.scene["REMeshLastImportedMeshVersion"] = 260421070
 			elif context.scene["REMeshLastImportedMeshVersion"] == 2102020001:
 				#Remap RE Verse to RE8
 				context.scene["REMeshLastImportedMeshVersion"] = 2101050001
@@ -1025,9 +1113,9 @@ class ExportREMesh(Operator, ExportHelper):
 				context.scene["REMeshLastImportedMeshVersion"] = 241111606
 		
 		if context.scene.get("REMeshLastExportedMeshVersion",0) in meshFileVersionToGameNameDict:
-			if context.scene["REMeshLastExportedMeshVersion"] == 231011879:
+			if context.scene["REMeshLastExportedMeshVersion"] in (231011879, 240423143):
 				#DD2 version update fix
-				context.scene["REMeshLastExportedMeshVersion"] = 240423143
+				context.scene["REMeshLastExportedMeshVersion"] = 260421070
 			elif context.scene["REMeshLastExportedMeshVersion"] == 2102020001:
 				#Remap RE Verse to RE8
 				context.scene["REMeshLastExportedMeshVersion"] = 2101050001
@@ -1083,10 +1171,23 @@ class ExportREMesh(Operator, ExportHelper):
 		layout.prop(self, "selectedOnly")
 		layout.label(text = "Advanced Options")
 		layout.prop(self, "exportAllLODs")
-		layout.prop(self, "exportBlendShapes", text="SF6: Preserve Source Data")
-		if self.targetCollection in bpy.data.collections and bpy.data.collections[self.targetCollection].get('SF6PreserveSource') and self.exportBlendShapes:
+		if self.filename_ext == ".230110883":
+			layout.prop(self, "exportBlendShapes", text="SF6: Preserve Source Data")
+		elif self.filename_ext == ".241111606":
+			layout.prop(self, "shapeKeyExportMode", text="Export Shape Keys")
+		if self.filename_ext == ".230110883":
+			row = layout.row()
+			row.enabled = self.exportBlendShapes and self.targetCollection in bpy.data.collections and bool(bpy.data.collections[self.targetCollection].get('SF6PreserveSource'))
+			row.prop(self, "sf6HybridPreserve")
+			if self.sf6HybridPreserve:
+				layout.label(text="Rebuilds LOD0 geometry/rig; exports edited shape-key deltas.", icon='INFO')
+				layout.label(text="Untouched source deltas stay; lower LODs are lost.")
+				if self.selectedOnly:
+					layout.label(text="Exports only selected LOD0 mesh parts.")
+		if self.targetCollection in bpy.data.collections and bpy.data.collections[self.targetCollection].get('SF6PreserveSource') and self.exportBlendShapes and not self.sf6HybridPreserve:
 			layout.label(text="Keeps all source LODs and deformation tables.", icon='INFO')
 			layout.label(text="Existing vertex/shape edits and deletions only.")
+			layout.label(text="Uses embedded source skeleton; Blender rig edits are ignored.")
 		#hasREToolbox = hasattr(bpy.types, "OBJECT_PT_re_tools_quick_export_panel")
 		row = layout.row()
 		#row.enabled = hasREToolbox
@@ -1094,6 +1195,17 @@ class ExportREMesh(Operator, ExportHelper):
 		row2 = layout.row()
 		#row2.enabled = hasREToolbox
 		row2.prop(self,"preserveSharpEdges")
+		row = layout.row()
+		row.enabled = not (self.filename_ext == ".230110883" and self.exportBlendShapes and self.sf6HybridPreserve)
+		row.prop(self,"splitLoopVertices")
+		if not row.enabled:
+			layout.label(text="Hybrid export keeps vertex order; corner splitting is off.", icon='INFO')
+		row = layout.row(align=True)
+		row.prop(self,"limitTotal")
+		limitRow = row.row(align=True)
+		limitRow.enabled = self.limitTotal
+		limitRow.prop(self,"limitTotalCount", text="Max Weights")
+		layout.prop(self,"normalizeWeights")
 		
 
 		layout.prop(self, "rotate90")
@@ -1102,6 +1214,9 @@ class ExportREMesh(Operator, ExportHelper):
 		layout.prop(self, "exportBoundingBoxes")
 	
 	def execute(self, context):
+		if self.filepath.endswith(".mesh.230110883") and self.sf6HybridPreserve and not self.exportBlendShapes:
+			self.report({'ERROR'}, 'SF6 Hybrid Shape Export requires Preserve Source Data to be enabled.')
+			return {'CANCELLED'}
 		# Legacy batch callers (RE Toolbox) omit the SF6 preservation argument.
 		# Use the independent batch choice only for calls without a dialog/value.
 		legacyBatchMode = False
@@ -1111,12 +1226,21 @@ class ExportREMesh(Operator, ExportHelper):
 				legacyBatchMode = True
 				self.exportBlendShapes = batch_preserve_source(collection)
 				print(f"SF6 legacy export: batch Preserve Source Data = {self.exportBlendShapes}")
-		options = {"targetCollection":self.targetCollection,"selectedOnly":self.selectedOnly,"exportAllLODs":self.exportAllLODs,"exportBlendShapes":self.exportBlendShapes,"rotate90":self.rotate90,"useBlenderMaterialName":self.useBlenderMaterialName,"preserveBoneMatrices":self.preserveBoneMatrices,"exportBoundingBoxes":self.exportBoundingBoxes,"autoSolveRepeatedUVs":self.autoSolveRepeatedUVs,"preserveSharpEdges":self.preserveSharpEdges}
+		options = {"targetCollection":self.targetCollection,"selectedOnly":self.selectedOnly,"exportAllLODs":self.exportAllLODs,"exportBlendShapes":self.exportBlendShapes,"sf6HybridPreserve":self.sf6HybridPreserve,"rotate90":self.rotate90,"useBlenderMaterialName":self.useBlenderMaterialName,"preserveBoneMatrices":self.preserveBoneMatrices,"exportBoundingBoxes":self.exportBoundingBoxes,"autoSolveRepeatedUVs":self.autoSolveRepeatedUVs,"preserveSharpEdges":self.preserveSharpEdges}
 		try:
 			meshVersion = int(os.path.splitext(self.filepath)[1].replace(".",""))
 		except:
 			self.report({"INFO"},"Mesh file path is missing number extension. Cannot export.")
 			return{"CANCELLED"}
+		if not self.properties.is_property_set('limitTotalCount'):
+			self.limitTotalCount = getMeshExportDefaultWeightLimit('.' + str(meshVersion))
+		options.update(splitLoopVertices=self.splitLoopVertices, limitTotal=self.limitTotal,
+		               limitTotalCount=self.limitTotalCount, normalizeWeights=self.normalizeWeights)
+		if meshVersion != 230110883:
+			options['sf6HybridPreserve'] = False
+		if meshVersion == 241111606:
+			options['exportBlendShapes'] = self.shapeKeyExportMode != 'NO'
+			options['blendShapeExportMode'] = 0 if self.shapeKeyExportMode == 'MODE0' else 1
 		editorVersion = str(bl_info["version"][0])+"."+str(bl_info["version"][1])
 		print(f"\n{textColors.BOLD}RE Mesh Editor V{editorVersion}{textColors.ENDC}")
 		print(f"Blender Version {bpy.app.version[0]}.{bpy.app.version[1]}.{bpy.app.version[2]}")
@@ -1135,11 +1259,16 @@ class ExportREMesh(Operator, ExportHelper):
 			self.report({'ERROR'}, str(error))
 			return {'CANCELLED'}
 		if success:
-			self.report({"INFO"},"Exported RE Mesh successfully.")
+			if options.get('sf6HybridPreserve', False):
+				report_hybrid_export(self, options.get('_sf6HybridReport'))
+			else:
+				self.report({"INFO"},"Exported RE Mesh successfully.")
 			if self.targetCollection in bpy.data.collections:
 				bpy.data.collections[self.targetCollection]["BatchExport_path"] = self.filepath
 				bpy.data.collections[self.targetCollection]["BatchExport_exportAllLODs"] = self.exportAllLODs
 				bpy.data.collections[self.targetCollection]["BatchExport_preserveSharpEdges"] = self.preserveSharpEdges
+				for key in ('autoSolveRepeatedUVs', 'splitLoopVertices', 'limitTotal', 'limitTotalCount', 'normalizeWeights', 'shapeKeyExportMode'):
+					bpy.data.collections[self.targetCollection]['BatchExport_' + key] = getattr(self, key)
 				bpy.data.collections[self.targetCollection]["BatchExport_rotate90"] = self.rotate90
 				if legacyBatchMode:
 					bpy.data.collections[self.targetCollection][BATCH_PRESERVE_SOURCE] = self.exportBlendShapes

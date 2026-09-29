@@ -297,21 +297,28 @@ def export_source(filepath, collection, options):
     src = SourceMesh(data)
     out = bytearray(data)
     rotate = collection['SF6SourceRotate']
-    if options.get('selectedOnly'):
-        raise ValueError('SF6 source mode exports the source collection; Selected Only is unsupported')
+    selected = set(bpy.context.selected_objects) if options.get('selectedOnly') else None
+    if selected is not None:
+        selected = {o for o in collection.all_objects if o in selected and o.type == 'MESH'
+                    and not o.get('~TYPE') and not o.get('MeshExportExclude')}
+        if not selected:
+            raise ValueError('No selected source mesh objects in the target collection')
     if options.get('rotate90',True) != rotate:
         raise ValueError('Use the same axis conversion setting as the source import')
-    armatures = [o for o in collection.all_objects if o.type == 'ARMATURE']
-    signature = _armature_signature(armatures[0] if armatures else None)
-    if json.dumps(signature) != collection['SF6ArmatureSignature']:
-        raise ValueError('SF6 source mode cannot change the skeleton. Restore the imported armature.')
     from mathutils import Matrix
-    if any(o.matrix_world != Matrix.Identity(4) for o in armatures):
-        raise ValueError('SF6 source mode requires the imported armature transform')
+    # The source skeleton is copied from the embedded file, never serialized from
+    # a Blender armature. A second imported rig or a merged rig may be useful for
+    # editing, but its bone changes cannot affect the exported source skeleton.
+    armatures = [o for o in collection.all_objects if o.type == 'ARMATURE']
+    source_signature = collection.get('SF6ArmatureSignature')
+    armature_differs = not any(json.dumps(_armature_signature(o)) == source_signature
+                               and o.matrix_world == Matrix.Identity(4) for o in armatures)
     edits = {'positions':0,'shape_vertices':0,'removed_faces':0,'removed_objects':0,'hip_stubs':0}
     objects = {}
     for obj in collection.all_objects:
         if obj.type != 'MESH' or obj.get('~TYPE'):
+            continue
+        if selected is not None and obj not in selected:
             continue
         if META not in obj or obj.get('SF6SourceSHA256') != collection['SF6SourceSHA256']:
             raise ValueError(
@@ -402,7 +409,10 @@ def export_source(filepath, collection, options):
                     edits['shape_vertices']+=1
             if np.any(changed&~covered&np.any(new_delta!=0,axis=1)):
                 raise ValueError('Shape edit extends outside its authored range: '+name)
-    # All source LODs stay present, including levels that were not imported.
+    if selected is not None:
+        from .sf6_source_subset import compact_source_subset
+        out = compact_source_subset(out, src, set(objects), options.get('exportAllLODs', True))
+    # Full-collection export retains the existing source-layout behavior.
     directory=os.path.dirname(os.path.abspath(filepath))
     fd,temp=tempfile.mkstemp(prefix='.sf6-',suffix='.tmp',dir=directory)
     try:
@@ -412,5 +422,10 @@ def export_source(filepath, collection, options):
     finally:
         if os.path.exists(temp):
             os.remove(temp)
-    print('SF6 source export:',json.dumps(edits),'; all source deformation tables and LODs retained')
+    if armature_differs:
+        print('SF6 source export: scene armature differs; embedded source skeleton '
+              'is retained and Blender rig edits are ignored')
+    print('SF6 source export:',json.dumps(edits),
+          '; selected source parts and their deformation data retained' if selected is not None
+          else '; all source deformation tables and LODs retained')
     return edits

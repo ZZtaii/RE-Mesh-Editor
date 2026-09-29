@@ -97,4 +97,3 @@ class OBJECT_PT_REAssetExtensionPanel(Panel):
 				pass
 		else:
 			layout.label(text="Update RE Asset Library for more options.")
-				

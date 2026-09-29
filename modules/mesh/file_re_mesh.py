@@ -10,9 +10,7 @@
 #5. The parsed mesh format is rebuilt inside blender_re_mesh.py once it has been error checked
 #6. The parsed format is passed back to file_re_mesh.py and rebuilt into a mesh structure (ParsedREMeshToREMesh())
 
-IMPORT_BLEND_SHAPES = False#Disabled by default because it's broken at the moment.
-#Set to True if you want to try to fix blend shape importing. The relevant code is in re_mesh_parse.py.
-#There's something wrong with getting the amount of deltas and also the way the deltas are parsed is not correct.
+IMPORT_BLEND_SHAPES = True
 
 #Meshes to test blend shapes with:
 #MHR player face "F:\MHR_EXTRACT\extract\re_chunk_000\natives\STM\player\mod\face\pl_face000.mesh.2109148288"
@@ -57,13 +55,20 @@ VERSION_ONI2 = 127#file:240827123,internal:240827123
 VERSION_MHWILDS = 130#file:241111606,internal:240704828
 VERSION_PRAGDEMO = 135#file:250925211,internal:250707828
 VERSION_MHS3 = 136#file:250604100,internal:250203152
+VERSION_ONIWOTS = 138#file:260209350,internal:250203152
 VERSION_RE9 = 140#file:250925211,internal:250707828#RE9 Placeholder
+VERSION_DD2_TU3_2 = 145#file:260421070,internal:251205828
+
+BLEND_SHAPE_VERSIONS = frozenset((
+	VERSION_MHWILDS,
+))
 
 SIX_WEIGHT_GAMES = frozenset([
 	VERSION_SF6,
 	VERSION_MHWILDS,
 	VERSION_MHS3,
 	VERSION_PRAGDEMO,
+	VERSION_ONIWOTS,
 	])
 
 meshFileVersionToNewVersionDict = {
@@ -85,8 +90,10 @@ meshFileVersionToNewVersionDict = {
 	240827123:VERSION_ONI2,
 	241111606:VERSION_MHWILDS,
 	250604100:VERSION_MHS3,
+	260209350:VERSION_ONIWOTS,
 	#250925211:VERSION_PRAGDEMO,
 	250925211:VERSION_RE9,
+	260421070:VERSION_DD2_TU3_2,
 	}
 newVersionToMeshFileVersion = {
 	VERSION_DMC5:1808282334,
@@ -105,8 +112,10 @@ newVersionToMeshFileVersion = {
 	VERSION_ONI2:240820143,
 	VERSION_MHWILDS:241111606,
 	VERSION_MHS3:250604100,
+	VERSION_ONIWOTS:260209350,
 	#VERSION_PRAGDEMO:250925211,
 	VERSION_RE9:250925211,
+	VERSION_DD2_TU3_2:260421070,
 	}
 meshFileVersionToInternalVersionDict = {
 	1808282334:386270720,#VERSION_DMC5
@@ -125,8 +134,10 @@ meshFileVersionToInternalVersionDict = {
 	240827123:240704828,#VERSION_ONI2
 	241111606:240704828,#VERSION_MHWILDS
 	250604100:250203152,#VERSION_MHS3
+	260209350:250203152,#VERSION_ONIWOTS
 	#250925211:250707828,#VERSION_PRAGDEMO
 	250925211:250904410,#VERSION_RE9
+	260421070:251205828,#VERSION_DD2_TU3_2
 	}
 internalVersionToMeshFileVersionDict = {
 	386270720:1808282334,#VERSION_DMC5
@@ -147,6 +158,7 @@ internalVersionToMeshFileVersionDict = {
 	250203152:250604100,#VERSION_MHS3
 	250707828:250925211,#VERSION_PRAGDEMO
 	250904410:250925211,#VERSION_RE9
+	251205828:260421070,#VERSION_DD2_TU3_2
 	}
 meshFileVersionToGameNameDict = {
 	1808282334:"DMC5",#VERSION_DMC5
@@ -167,13 +179,18 @@ meshFileVersionToGameNameDict = {
 	240827123:"ONI2",#VERSION_ONI2
 	241111606:"MHWILDS",#VERSION_MHWILDS
 	250604100:"MHS3",#VERSION_MHS3
+	260209350:"ONIWOTS",#Onimusha: WoTS
 	#250925211:"PRAG",#VERSION_PRAGDEMO
 	250925211:"RE9",#VERSION_RE9
+	260421070:"DD2",#VERSION_DD2_TU3_2
 	}
 
 #Used for unmapped mesh versions, potentially allows for importing
 def getNearestRemapVersion(meshVersion):#Returns the remapped version number of the closest mesh version
-	return meshFileVersionToNewVersionDict[min(meshFileVersionToNewVersionDict.keys(), key=lambda x:abs(x-meshVersion))]
+	if meshVersion == 260421070:
+		return VERSION_DD2_TU3_2
+	knownVersions = (version for version in meshFileVersionToNewVersionDict if version != 260421070)
+	return meshFileVersionToNewVersionDict[min(knownVersions, key=lambda x:abs(x-meshVersion))]
 
 c_uint64 = ctypes.c_uint64
 class CompressedSixWeightIndices_bits(ctypes.LittleEndianStructure):
@@ -295,10 +312,16 @@ class MaterialSubdivision():
 		self.streamingPlatormSpecificOffsetBytes = 0
 		self.dr_unkn1 = 0
 	def read(self,file,version):
-		self.materialIndex = read_ubyte(file)	
-		self.isQuad = read_ubyte(file)
-		self.vertexBufferIndex = read_ubyte(file)
-		self.padding = read_ubyte(file)
+		if version == VERSION_ONIWOTS:
+			self.materialIndex = read_ushort(file)
+			self.vertexBufferIndex = read_ubyte(file)
+			self.padding = read_ubyte(file)
+			self.isQuad = 0
+		else:
+			self.materialIndex = read_ubyte(file)
+			self.isQuad = read_ubyte(file)
+			self.vertexBufferIndex = read_ubyte(file)
+			self.padding = read_ubyte(file)
 		if version >= VERSION_DR:
 			self.dr_unkn0 = read_uint(file)
 		self.faceCount = read_uint(file)
@@ -310,10 +333,15 @@ class MaterialSubdivision():
 		if version >= VERSION_DD2NEW:
 			self.dr_unkn1 = read_uint(file)
 	def write(self,file,version):
-		write_ubyte(file, self.materialIndex)
-		write_ubyte(file, self.isQuad)
-		write_ubyte(file, self.vertexBufferIndex)
-		write_ubyte(file, self.padding)
+		if version == VERSION_ONIWOTS:
+			write_ushort(file, self.materialIndex)
+			write_ubyte(file, self.vertexBufferIndex)
+			write_ubyte(file, self.padding)
+		else:
+			write_ubyte(file, self.materialIndex)
+			write_ubyte(file, self.isQuad)
+			write_ubyte(file, self.vertexBufferIndex)
+			write_ubyte(file, self.padding)
 		if version >= VERSION_DR:
 			write_uint(file, self.dr_unkn0)
 		write_uint(file, self.faceCount)
@@ -674,6 +702,11 @@ class MeshBufferHeader():
 		self.vertexElementSize = 0#TODO this field name is not correct
 		self.unkn1 = -1
 		self.sunbreakSecondUnknown = 0
+		self.blendShapeOffset = 0#DD2_TU3_2
+		self.blendShapeOffset2 = 0
+		self.blendShapeOffset3 = 0
+		self.shapeKeyWeightBufferSize = 0
+		self.bufferIndex = 0
 		self.vertexElementList = []
 		self.streamingBufferHeaderList = []#WILDS
 		self.vertexBuffer = bytearray()
@@ -714,10 +747,17 @@ class MeshBufferHeader():
 			self.block2FaceBufferOffset = read_uint(file)
 			self.faceBufferSize = self.block2FaceBufferOffset - self.vertexBufferSize
 			self.NULL = read_uint(file)
-			self.vertexElementSize = read_short(file)
-			self.unkn1 = read_short(file)
-			self.sunbreakSecondUnknown = read_uint64(file)
-			self.sf6unkn0 = read_uint64(file)
+			if version == VERSION_DD2_TU3_2:
+				self.blendShapeOffset = read_int(file)
+				self.blendShapeOffset2 = read_int(file)
+				self.blendShapeOffset3 = read_int(file)
+				self.shapeKeyWeightBufferSize = read_int(file)
+				self.bufferIndex = read_int(file)
+			else:
+				self.vertexElementSize = read_short(file)
+				self.unkn1 = read_short(file)
+				self.sunbreakSecondUnknown = read_uint64(file)
+				self.sf6unkn0 = read_uint64(file)
 			self.streamingVertexElementOffset = read_uint64(file)
 			self.sf6unkn2 = read_uint64(file)
 			
@@ -784,7 +824,7 @@ class MeshBufferHeader():
 		
 		
 		if self.sunbreakOffset != 0:
-			if (version == VERSION_DD2 or version == VERSION_DD2NEW):	
+			if version in (VERSION_DD2, VERSION_DD2NEW, VERSION_DD2_TU3_2):
 				#Limit this DD2 for now in case it happens to be used in other games for other things
 				file.seek(self.sunbreakOffset)
 				vertexCount = self.vertexElementList[1].posStartOffset // 12#Get amount of vertices from length of position buffer,pos data is 12 bytes
@@ -820,10 +860,17 @@ class MeshBufferHeader():
 				write_uint64(file, self.prag_unknOffset1)
 			write_uint(file, self.block2FaceBufferOffset)
 			write_uint(file, self.NULL)
-			write_short(file, self.vertexElementSize)
-			write_short(file, self.unkn1)
-			write_uint64(file, self.sunbreakSecondUnknown)
-			write_uint64(file, self.sf6unkn0)
+			if version == VERSION_DD2_TU3_2:
+				write_int(file, self.blendShapeOffset)
+				write_int(file, self.blendShapeOffset2)
+				write_int(file, self.blendShapeOffset3)
+				write_int(file, self.shapeKeyWeightBufferSize)
+				write_int(file, self.bufferIndex)
+			else:
+				write_short(file, self.vertexElementSize)
+				write_short(file, self.unkn1)
+				write_uint64(file, self.sunbreakSecondUnknown)
+				write_uint64(file, self.sf6unkn0)
 			write_uint64(file, self.streamingVertexElementOffset)
 			write_uint64(file, self.sf6unkn2)
 			
@@ -924,6 +971,7 @@ class FileHeader():
 		#TODO Fix write for wilds changes
 		self.wilds_unkn1 = 0#TODO Clean these variables up and figure out if they're not actually new, just shifted
 		self.wilds_unkn2 = 0
+		self.bufferCount = 0#DD2_TU3_2 stores this separately from content flags
 		self.wilds_unkn3 = 0
 		self.wilds_unkn4 = 0
 		self.wilds_unkn5 = 0
@@ -1002,10 +1050,21 @@ class FileHeader():
 			self.contentFlag.read(file)
 			self.sf6UnknCount = read_short(file)
 			
-			self.wilds_unkn2 = read_uint(file)
-			self.wilds_unkn3 = read_uint(file)
-			self.wilds_unkn4 = read_uint(file)
-			self.wilds_unkn5 = read_short(file)
+			if version == VERSION_DD2_TU3_2:
+				self.bufferCount = read_short(file)
+				self.wilds_unkn3 = read_uint(file)
+				self.wilds_unkn4 = read_uint(file)
+				self.wilds_unkn5 = read_uint(file)
+			elif version == VERSION_ONIWOTS:
+				self.wilds_unkn2 = read_short(file)
+				self.wilds_unkn3 = read_uint(file)
+				self.wilds_unkn4 = read_uint(file)
+				self.wilds_unkn5 = read_uint(file)
+			else:
+				self.wilds_unkn2 = read_uint(file)
+				self.wilds_unkn3 = read_uint(file)
+				self.wilds_unkn4 = read_uint(file)
+				self.wilds_unkn5 = read_short(file)
 				
 			self.verticesOffset = read_uint64(file)
 			self.meshGroupOffset = read_uint64(file)
@@ -1089,10 +1148,21 @@ class FileHeader():
 			write_short(file, self.nameCount)
 			self.contentFlag.write(file)
 			write_short(file, self.sf6UnknCount)
-			write_uint(file, self.wilds_unkn2)
-			write_uint(file, self.wilds_unkn3)
-			write_uint(file, self.wilds_unkn4)
-			write_short(file, self.wilds_unkn5)
+			if version == VERSION_DD2_TU3_2:
+				write_short(file, self.bufferCount)
+				write_uint(file, self.wilds_unkn3)
+				write_uint(file, self.wilds_unkn4)
+				write_uint(file, self.wilds_unkn5)
+			elif version == VERSION_ONIWOTS:
+				write_short(file, self.wilds_unkn2)
+				write_uint(file, self.wilds_unkn3)
+				write_uint(file, self.wilds_unkn4)
+				write_uint(file, self.wilds_unkn5)
+			else:
+				write_uint(file, self.wilds_unkn2)
+				write_uint(file, self.wilds_unkn3)
+				write_uint(file, self.wilds_unkn4)
+				write_short(file, self.wilds_unkn5)
 			write_uint64(file, self.verticesOffset)
 			write_uint64(file, self.meshGroupOffset)
 			write_uint64(file, self.shadowMeshGroupOffset)
@@ -1229,15 +1299,19 @@ class BlendTarget():
 			file.seek(currentPos)
 		
 	def write(self,file,version):#TODO FIX WRITE
-		write_uint64(file, self.count)
-		write_uint64(file, self.mainOffset)
-		write_uint64(file, self.zero)
-		write_uint64(file, self.hash)
-		for entry in self.blendShapeOffsetList:
-			write_uint64(file,entry)
-		
-		for entry in self.blendShapeList:#TODO FIX WRITE
-			entry.write(file)
+		if version < VERSION_SF6:
+			write_uint(file, self.subMeshVertexStartIndex)
+			write_uint(file, self.vertCount)
+			write_ushort(file, self.blendSSIndex)
+			write_ushort(file, self.blendShapeNum)
+			write_uint(file, self.deltaOffset)
+		else:
+			write_ushort(file, self.blendSSIndex)
+			write_ushort(file, self.blendShapeNum)
+			write_ushort(file, self.unkn0)
+			write_ubyte(file, self.subMeshEntryCount)
+			write_ubyte(file, self.unkn2)
+			write_uint64(file, self.subMeshEntryOffset)
 
 class BlendShapeData():
 	def __init__(self):
@@ -1264,8 +1338,11 @@ class BlendShapeData():
 		self.aabbOffset = read_uint64(file)
 		self.blendSOffset = read_uint64(file)
 		self.blendSSOffset = read_uint64(file)
+		serializedTargetCount = int(self.targetCount)
+		if version == VERSION_MHWILDS:
+			serializedTargetCount += int(self.typing)
 		file.seek(self.dataOffset)
-		for i in range(0,self.targetCount):
+		for i in range(0,serializedTargetCount):
 			blendTargetEntry = BlendTarget()
 			blendTargetEntry.read(file,version)
 			self.blendTargetList.append(blendTargetEntry)
@@ -1275,12 +1352,14 @@ class BlendShapeData():
 			aabbEntry = AABB()
 			aabbEntry.read(file)
 			self.aabbList.append(aabbEntry)
+		file.seek(self.blendSOffset)
 		self.blendS = [read_int(file),read_int(file),read_int(file)]
+		file.seek(self.blendSSOffset)
 		self.blendSSList = []
 		for blendTarget in self.blendTargetList:
 			for i in range(0,blendTarget.blendShapeNum):
 				self.blendSSList.append(read_int(file))
-	def write(self,file):#TODO FIX WRITE
+	def write(self,file,version):
 		write_ushort(file, self.targetCount)
 		write_ushort(file, self.typing)
 		write_uint(file, self.unknFlag)
@@ -1290,15 +1369,31 @@ class BlendShapeData():
 		write_uint64(file, self.aabbOffset)
 		write_uint64(file, self.blendSOffset)
 		write_uint64(file, self.blendSSOffset)
-		write_uint(file, self.vertOffset)
-		write_uint(file, self.vertCount)
-		write_ushort(file, self.visconTarget)
-		write_ushort(file,self.blendShapeCount)
-		self.aabb.write(file)
+		maxEndPos = file.tell()
+		if version >= VERSION_SF6:
+			for target in self.blendTargetList:
+				if target.subMeshEntryOffset:
+					file.seek(target.subMeshEntryOffset)
+					for subMeshEntry in target.subMeshEntryList:
+						subMeshEntry.write(file)
+					maxEndPos = max(maxEndPos, file.tell())
+		file.seek(self.dataOffset)
+		for target in self.blendTargetList:
+			target.write(file,version)
+		maxEndPos = max(maxEndPos, file.tell())
+		file.seek(self.aabbOffset)
+		for entry in self.aabbList:
+			entry.write(file)
+		maxEndPos = max(maxEndPos, file.tell())
+		file.seek(self.blendSOffset)
 		for entry in self.blendS:
 			write_int(file,entry)
+		maxEndPos = max(maxEndPos, file.tell())
+		file.seek(self.blendSSOffset)
 		for entry in self.blendSSList:
 			write_int(file,entry)
+		maxEndPos = max(maxEndPos, file.tell())
+		file.seek(getPaddedPos(maxEndPos, 16))
 
 class BlendShapeHeader():
 	def __init__(self):
@@ -1308,7 +1403,6 @@ class BlendShapeHeader():
 		self.hash = 0
 		self.blendShapeOffsetList = []
 		self.blendShapeList = []	
-		#TODO Blend shapes are different in wilds, fix
 		
 	def read(self,file,version):
 		self.count = read_uint64(file)
@@ -1333,14 +1427,26 @@ class BlendShapeHeader():
 		
 	def write(self,file,version):
 		write_uint64(file, self.count)
-		write_uint64(file, self.mainOffset)
-		write_uint64(file, self.zero)
+		if version < VERSION_ONI2:
+			write_uint64(file, self.mainOffset)
+			write_uint64(file, self.zero)
+		else:
+			write_uint64(file, self.zero)
+			write_uint64(file, self.mainOffset)
 		write_uint64(file, self.hash)
 		for entry in self.blendShapeOffsetList:
 			write_uint64(file,entry)
 		
-		for entry in self.blendShapeList:#TODO FIX WRITE
+		maxEndPos = file.tell()
+		physicalOffsets = list(
+			getattr(self, "_physicalBlendOffsets", [])
+			or self.blendShapeOffsetList
+		)
+		for entry, offset in zip(self.blendShapeList, physicalOffsets):
+			file.seek(offset)
 			entry.write(file,version)
+			maxEndPos = max(maxEndPos, file.tell())
+		file.seek(getPaddedPos(maxEndPos, 16))
 
 class BoneAABBGroup():
 	def __init__(self):
@@ -1470,7 +1576,8 @@ class FloatData():
 		self.unknDataList = []
 		
 	def read(self,file):
-		self.count = read_uint64(file)
+		self.bufferSize = read_uint64(file)
+		self.count = self.bufferSize
 		self.offset = read_uint64(file)
 		self.unknDataList = []
 		startPos = file.tell()
@@ -1534,14 +1641,7 @@ class REMesh():
 			file.seek(self.fileHeader.skeletonOffset)
 			self.skeletonHeader = Skeleton()
 			self.skeletonHeader.read(file)
-		#TODO - Normal recalc is changed or offset is different in mhwilds
-		"""
-		if self.fileHeader.normalRecalcOffset:
-			file.seek(self.fileHeader.normalRecalcOffset)
-			self.normalRecalcHeader = NormalRecalc()
-			self.normalRecalcHeader.read(file,sum([i.vertexCount for i in self.lodHeader.lodGroupList[0].meshGroupList]),sum([i.faceCount for i in self.lodHeader.lodGroupList[0].meshGroupList]))
-		"""
-		if self.fileHeader.blendShapesOffset and IMPORT_BLEND_SHAPES:
+		if version in BLEND_SHAPE_VERSIONS and self.fileHeader.blendShapesOffset and IMPORT_BLEND_SHAPES:
 			file.seek(self.fileHeader.blendShapesOffset)
 			self.blendShapeHeader = BlendShapeHeader()
 			self.blendShapeHeader.read(file,version)
@@ -1557,8 +1657,33 @@ class REMesh():
 				self.streamingInfoHeader = StreamingInfo()
 				self.streamingInfoHeader.read(file)
 				if self.streamingInfoHeader.entryCount != 0 and streamingBuffer == None:
-					raiseError("Streaming mesh file is missing. Both mesh files are required. Extract the corresponding mesh file from inside the streaming directory.\n\nExample Mesh Path: natives\\STM\\Art\\Model\\Character\\ch02\\007\\000\\1\\ch02_007_0001.mesh.241111606\nExample Streaming Mesh Path: natives\\STM\\streaming\\Art\\Model\\Character\\ch02\\007\\000\\1\\ch02_007_0001.mesh.241111606")
-					raise Exception("Streaming mesh file is missing. Both mesh files are required. Extract the corresponding mesh file from inside the streaming directory.")
+					if version == VERSION_MHWILDS:
+						# Unified Wilds exports can keep stream-relative rows inside the
+						# main mesh, beginning at FileHeader.verticesOffset. Do not apply
+						# this fallback to other RE Engine games.
+						entries = self.streamingInfoHeader.streamingInfoEntryList
+						embeddedSize = max(
+							(
+								int(entry.bufferStart)
+								+ int(entry.bufferLength)
+								for entry in entries
+							),
+							default=0,
+						)
+						currentPos = file.tell()
+						if (
+							self.fileHeader.verticesOffset > 0
+							and embeddedSize > 0
+						):
+							file.seek(self.fileHeader.verticesOffset)
+							embedded = file.read(embeddedSize)
+							if len(embedded) == embeddedSize:
+								streamingBuffer = embedded
+								self.streamingBuffer = embedded
+						file.seek(currentPos)
+					if streamingBuffer == None:
+						raiseError("Streaming mesh file is missing. Both mesh files are required. Extract the corresponding mesh file from inside the streaming directory.\n\nExample Mesh Path: natives\\STM\\Art\\Model\\Character\\ch02\\007\\000\\1\\ch02_007_0001.mesh.241111606\nExample Streaming Mesh Path: natives\\STM\\streaming\\Art\\Model\\Character\\ch02\\007\\000\\1\\ch02_007_0001.mesh.241111606")
+						raise Exception("Streaming mesh file is missing. Both mesh files are required. Extract the corresponding mesh file from inside the streaming directory.")
 		if self.fileHeader.meshOffset:
 			file.seek(self.fileHeader.meshOffset)
 			self.meshBufferHeader = MeshBufferHeader()
@@ -1611,6 +1736,32 @@ class REMesh():
 			if self.fileHeader.skeletonOffset != file.tell():
 				print(f"ERROR IN OFFSET CALCULATION - skeletonOffset - expected {self.fileHeader.skeletonOffset}, actual {file.tell()}")
 			self.skeletonHeader.write(file)
+
+		# The Wilds normal-recalculation marker is a real 16-byte
+		# metadata record immediately before blendShapesOffset. The offset builder
+		# reserved this range; emit a zero placeholder here so the normal-contract
+		# finalizer can populate ({mode}, 0, 0, 0) after normal/pivot data is generated.
+		mhwildsMarkerOffset = int(
+			getattr(self, "_mhwildsNormalMarkerOffset", 0)
+		)
+		if mhwildsMarkerOffset:
+			if int(self.fileHeader.normalRecalcOffset) != mhwildsMarkerOffset:
+				raise RuntimeError(
+					"Wilds normal marker header/reservation mismatch: "
+					f"0x{int(self.fileHeader.normalRecalcOffset):X}/"
+					f"0x{mhwildsMarkerOffset:X}"
+				)
+			if file.tell() != mhwildsMarkerOffset:
+				raise RuntimeError(
+					"Wilds normal marker serialization position mismatch: "
+					f"0x{file.tell():X}/0x{mhwildsMarkerOffset:X}"
+				)
+			file.write(b"\x00" * 16)
+
+		if self.fileHeader.blendShapesOffset:
+			if self.fileHeader.blendShapesOffset != file.tell():
+				print(f"ERROR IN OFFSET CALCULATION - blendShapesOffset - expected {self.fileHeader.blendShapesOffset}, actual {file.tell()}")
+			self.blendShapeHeader.write(file,version)
 		
 		if self.fileHeader.materialNameRemapOffset and self.fileHeader.materialNameRemapOffset != file.tell():
 			print(f"ERROR IN OFFSET CALCULATION - materialNameRemapOffset - expected {self.fileHeader.materialNameRemapOffset}, actual {file.tell()}")
@@ -1759,59 +1910,98 @@ def WriteToUVBuffer(bufferStream,uvList):
 	#print(uvArray)
 	bufferStream.write(uvArray.tobytes())
 
-def WriteToWeightBuffer(bufferStream,boneWeightsList,boneIndicesList,isSixWeight):
+def QuantizeWeightArrayToBytes(boneWeightsArray, normalizeWeights=True):
+	# Helper function specifically for quantizing weight arrays to bytes and including the automatic pre-normalization option,
+	# (The one that normalizes the Blender float values before the byte conversion.)
+	boneWeightsArray = np.array(boneWeightsArray, dtype=np.float64)
+
+	if boneWeightsArray.size == 0:
+		return boneWeightsArray.astype("<B")
+
+	boneWeightsArray = np.clip(boneWeightsArray, 0.0, 1.0)
+
+	if not normalizeWeights:
+		quantizedWeights = np.rint(boneWeightsArray * 255.0)
+		quantizedWeights = np.clip(quantizedWeights, 0, 255)
+		return quantizedWeights.astype("<B")
+
+	weightSums = np.sum(boneWeightsArray, axis=1, dtype=np.float64)
+	normalizedWeights = np.zeros_like(boneWeightsArray, dtype=np.float64)
+	nonZeroRows = weightSums != 0
+
+	with np.errstate(divide='ignore', invalid='ignore'):
+		normalizedWeights[nonZeroRows] = boneWeightsArray[nonZeroRows] / weightSums[nonZeroRows, None]
+
+	normalizedWeights = np.clip(normalizedWeights, 0.0, 1.0)
+
+	scaledWeights = normalizedWeights * 255.0
+	quantizedWeights = np.floor(scaledWeights).astype(np.int32)
+	remainders = scaledWeights - quantizedWeights
+
+	rowDiffs = 255 - np.sum(quantizedWeights, axis=1, dtype=np.int32)
+
+	for rowIndex, diff in enumerate(rowDiffs):
+		if not nonZeroRows[rowIndex]:
+			continue
+
+		if diff > 0:
+			# This is sort of like a 'tie-breaker.' Gives the remaining bytes to the largest remainders first.
+			indices = np.argsort(-remainders[rowIndex], kind="stable")
+
+			for i in indices[:diff]:
+				quantizedWeights[rowIndex, i] += 1
+
+		elif diff < 0:
+			indices = np.argsort(remainders[rowIndex], kind="stable")
+			remaining = -int(diff)
+
+			for i in indices:
+				if remaining == 0:
+					break
+
+				if quantizedWeights[rowIndex, i] > 0:
+					quantizedWeights[rowIndex, i] -= 1
+					remaining -= 1
+
+	quantizedWeights = np.clip(quantizedWeights, 0, 255)
+	return quantizedWeights.astype("<B")
+
+
+def PackSixWeightIndices(boneIndicesList):
+	indices = np.asarray(boneIndicesList, dtype=np.uint64)
+	if indices.size == 0:
+		return np.empty((0, 8), dtype=np.uint8)
+	if indices.ndim != 2 or indices.shape[1] < 6:
+		raise ValueError("Six-weight bone index data must contain at least 6 indices per vertex")
+
+	indices = indices[:, :6]
+	packed = (
+		(indices[:, 0] & np.uint64(0x3FF))
+		| ((indices[:, 1] & np.uint64(0x3FF)) << np.uint64(10))
+		| ((indices[:, 2] & np.uint64(0x3FF)) << np.uint64(20))
+		| ((indices[:, 3] & np.uint64(0x3FF)) << np.uint64(32))
+		| ((indices[:, 4] & np.uint64(0x3FF)) << np.uint64(42))
+		| ((indices[:, 5] & np.uint64(0x3FF)) << np.uint64(52))
+	)
+	return packed.astype("<u8", copy=False).reshape((-1, 1)).view(np.uint8).reshape((-1, 8))
+
+
+def WriteToWeightBuffer(bufferStream,boneWeightsList,boneIndicesList,isSixWeight=False,normalizeWeights=True,version=None):
 	
 	if isSixWeight:
-		#TODO Do bitfield work in numpy
-		bf = CompressedSixWeightIndices()
-		uint64Array = np.empty((len(boneWeightsList),1), dtype=np.dtype("<Q"))
-		for index in range(len(boneIndicesList)):
-			#print(f"boneIndicesList: {boneIndicesList[index]}")
-			bf.weights.w0 = boneIndicesList[index][0]
-			bf.weights.w1 = boneIndicesList[index][1]
-			bf.weights.w2 = boneIndicesList[index][2]
-			bf.weights.pad0 = 0
-			bf.weights.w3 = boneIndicesList[index][3]
-			bf.weights.w4 = boneIndicesList[index][4]
-			bf.weights.w5 = boneIndicesList[index][5]
-			bf.weights.pad1 = 0
-			uint64Array[index] = bf.asUInt64
-			#print(f"bitfield: {[bf.weights.w0,bf.weights.w1,bf.weights.w2,bf.weights.w3,bf.weights.w4,bf.weights.w5]}")
-			#print(f"uint64: {uint64Array[index]}\n")
-		boneIndicesArray = uint64Array.view(dtype = "<B")#.byteswap(inplace=True)
-		#print(boneIndicesArray)
+		boneIndicesArray = PackSixWeightIndices(boneIndicesList)
+		if (version == VERSION_MHWILDS or version == VERSION_ONIWOTS) and len(boneIndicesArray) != 0:
+			packed = boneIndicesArray.copy().view("<u8").reshape((-1))
+			packed |= (np.uint64(3) << np.uint64(30)) | (np.uint64(3) << np.uint64(62))
+			boneIndicesArray = packed.reshape((-1, 1)).view(np.uint8).reshape((-1, 8))
 	else:
 		boneIndicesArray = boneIndicesList.astype("<B")
 	
 	
 	
-	boneWeightsArray = np.array(boneWeightsList)
+	boneWeightsArray = QuantizeWeightArrayToBytes(boneWeightsList, normalizeWeights)
 	
-	#Clean Weights
-	#boneWeightsArray = np.round(boneWeightsArray,decimals=4)
-	#MIN_FLOAT_VALUE = 0.01
-	#boneWeightsArray = np.where(((boneWeightsArray != 0) & (boneWeightsArray < MIN_FLOAT_VALUE)),0.0,boneWeightsArray)
-	
-	#boneWeightsArray = np.round(boneWeightsArray,decimals = 2)
-	weightSums = np.sum(boneWeightsArray,axis = 1,dtype = np.float32)
-	#print(weightSums)
-	#Normalize weights to 1.0
-	with np.errstate(divide='ignore', invalid='ignore'):
-	    boneWeightsArray = boneWeightsArray / weightSums[:,None]
-	    boneWeightsArray[weightSums == 0] = 0
-	boneWeightsArray = np.multiply(boneWeightsArray,255)
-	boneWeightsArray = np.round(boneWeightsArray)
-	diffSums = 255.0 - np.sum(boneWeightsArray,axis = 1,dtype = np.float32)
-	#print(diffSums)
-	#for i in range(len(boneWeightsArray)):
-		#print(f"{boneWeightsArray[i]}, difference: {diffSums[i]}")
-	
-	#Add difference of 255 to the largest value of each row in weight array
-	boneWeightsArray[np.arange(boneWeightsArray.shape[0]), np.argmax(boneWeightsArray, axis=1)] += diffSums
-	#boneWeightsArray[:, 0] += diffSums
-	boneWeightsArray = boneWeightsArray.astype("<B")
-	
-	if (255 - np.sum(boneWeightsArray,axis = 1,dtype = np.int32) != 0).any():
+	if normalizeWeights and (255 - np.sum(boneWeightsArray,axis = 1,dtype = np.int32) != 0).any():
 		raiseWarning("Non normalized weights detected on sub mesh! Weights may not behave as expected in game!")
 	
 	#Set zero weight bone indices to 0
@@ -1823,78 +2013,33 @@ def WriteToWeightBuffer(bufferStream,boneWeightsList,boneIndicesList,isSixWeight
 	#print(weightArray)
 	bufferStream.write(weightArray.tobytes())
 
-def WriteToWeightBufferExtended(bufferStream,boneWeightsList,boneIndicesList,extraBufferStream,extraBoneWeightsList,extraBoneIndicesList,isSixWeight):
+
+def WriteToWeightBufferExtended(bufferStream,boneWeightsList,boneIndicesList,extraBufferStream,extraBoneWeightsList,extraBoneIndicesList,isSixWeight=False,normalizeWeights=True,version=None):
 	
 	if isSixWeight:
-		#TODO Do bitfield work in numpy
-		bf = CompressedSixWeightIndices()
-		uint64Array = np.empty((len(boneWeightsList),1), dtype=np.dtype("<Q"))
-		for index in range(len(boneIndicesList)):
-			#print(f"boneIndicesList: {boneIndicesList[index]}")
-			bf.weights.w0 = boneIndicesList[index][0]
-			bf.weights.w1 = boneIndicesList[index][1]
-			bf.weights.w2 = boneIndicesList[index][2]
-			bf.weights.pad0 = 0
-			bf.weights.w3 = boneIndicesList[index][3]
-			bf.weights.w4 = boneIndicesList[index][4]
-			bf.weights.w5 = boneIndicesList[index][5]
-			bf.weights.pad1 = 0
-			uint64Array[index] = bf.asUInt64
-			#print(f"bitfield: {[bf.weights.w0,bf.weights.w1,bf.weights.w2,bf.weights.w3,bf.weights.w4,bf.weights.w5]}")
-			#print(f"uint64: {uint64Array[index]}\n")
-		boneIndicesArray = uint64Array.view(dtype = "<B")#.byteswap(inplace=True)
-		
-		uint64Array2 = np.empty((len(extraBoneIndicesList),1), dtype=np.dtype("<Q"))#Extra weights
-		for index in range(len(extraBoneIndicesList)):
-			#print(f"boneIndicesList: {boneIndicesList[index]}")
-			bf.weights.w0 = extraBoneIndicesList[index][0]
-			bf.weights.w1 = extraBoneIndicesList[index][1]
-			bf.weights.w2 = extraBoneIndicesList[index][2]
-			bf.weights.pad0 = 0
-			bf.weights.w3 = extraBoneIndicesList[index][3]
-			bf.weights.w4 = extraBoneIndicesList[index][4]
-			bf.weights.w5 = extraBoneIndicesList[index][5]
-			bf.weights.pad1 = 0
-			uint64Array2[index] = bf.asUInt64
-			#print(f"bitfield: {[bf.weights.w0,bf.weights.w1,bf.weights.w2,bf.weights.w3,bf.weights.w4,bf.weights.w5]}")
-			#print(f"uint64: {uint64Array[index]}\n")
-		extraBoneIndicesArray = uint64Array2.view(dtype = "<B")#.byteswap(inplace=True)
-		#print(boneIndicesArray)
+		boneIndicesArray = PackSixWeightIndices(boneIndicesList)
+		extraBoneIndicesArray = PackSixWeightIndices(extraBoneIndicesList)
+		if (version == VERSION_MHWILDS or version == VERSION_ONIWOTS) and len(boneIndicesArray) != 0:
+			packed = boneIndicesArray.copy().view("<u8").reshape((-1))
+			packed |= (np.uint64(3) << np.uint64(30)) | (np.uint64(3) << np.uint64(62))
+			boneIndicesArray = packed.reshape((-1, 1)).view(np.uint8).reshape((-1, 8))
 	else:
 		boneIndicesArray = boneIndicesList.astype("<B")
 		extraBoneIndicesArray = extraBoneIndicesList.astype("<B")
 	
 	
 	
-	boneWeightsArray = np.array(boneWeightsList)
-	#Combine extra weights with first set so that they're normalized together
-	boneWeightsArray = np.hstack((boneWeightsArray,np.array(extraBoneWeightsList)))
-	#print(boneWeightsArray)
-	#Clean Weights
-	#boneWeightsArray = np.round(boneWeightsArray,decimals=4)
-	#MIN_FLOAT_VALUE = 0.01
-	#boneWeightsArray = np.where(((boneWeightsArray != 0) & (boneWeightsArray < MIN_FLOAT_VALUE)),0.0,boneWeightsArray)
+	if version == VERSION_MHWILDS or version == VERSION_ONIWOTS:
+		boneWeightsArray = np.asarray(boneWeightsList, dtype=np.float64)[:, :6]
+		extraBoneWeightsArray = np.asarray(extraBoneWeightsList, dtype=np.float64)[:, :6]
+		boneWeightsArray = np.hstack((boneWeightsArray,extraBoneWeightsArray))
+		boneWeightsArray = QuantizeWeightArrayToBytes(boneWeightsArray, normalizeWeights)
+	else:
+		boneWeightsArray = np.array(boneWeightsList)
+		boneWeightsArray = np.hstack((boneWeightsArray,np.array(extraBoneWeightsList)))
+		boneWeightsArray = QuantizeWeightArrayToBytes(boneWeightsArray, normalizeWeights)
 	
-	#boneWeightsArray = np.round(boneWeightsArray,decimals = 2)
-	weightSums = np.sum(boneWeightsArray,axis = 1,dtype = np.float32)
-	#print(weightSums)
-	#Normalize weights to 1.0
-	with np.errstate(divide='ignore', invalid='ignore'):
-	    boneWeightsArray = boneWeightsArray / weightSums[:,None]
-	    boneWeightsArray[weightSums == 0] = 0
-	boneWeightsArray = np.multiply(boneWeightsArray,255)
-	boneWeightsArray = np.round(boneWeightsArray)
-	diffSums = 255.0 - np.sum(boneWeightsArray,axis = 1,dtype = np.float32)
-	#print(diffSums)
-	#for i in range(len(boneWeightsArray)):
-		#print(f"{boneWeightsArray[i]}, difference: {diffSums[i]}")
-	
-	#Add difference of 255 to the largest value of each row in weight array
-	boneWeightsArray[np.arange(boneWeightsArray.shape[0]), np.argmax(boneWeightsArray, axis=1)] += diffSums
-	#boneWeightsArray[:, 0] += diffSums
-	boneWeightsArray = boneWeightsArray.astype("<B")
-	
-	if (255 - np.sum(boneWeightsArray,axis = 1,dtype = np.int32) != 0).any():
+	if normalizeWeights and (255 - np.sum(boneWeightsArray,axis = 1,dtype = np.int32) != 0).any():
 		raiseWarning("Non normalized weights detected on sub mesh! Weights may not behave as expected in game!")
 	
 	#Set zero weight bone indices to 0
@@ -1908,7 +2053,12 @@ def WriteToWeightBufferExtended(bufferStream,boneWeightsList,boneIndicesList,ext
 	
 	extraWeightArray = np.empty((len(extraBoneWeightsList)*2,8), dtype=np.dtype("<B"))
 	extraWeightArray[::2] = extraBoneIndicesArray
-	extraWeightArray[1::2] = boneWeightsArray[:,8:]
+	if version == VERSION_MHWILDS or version == VERSION_ONIWOTS:
+		extraPhysicalWeights = np.zeros((len(extraBoneWeightsList),8), dtype=np.uint8)
+		extraPhysicalWeights[:,:4] = boneWeightsArray[:,8:12]
+		extraWeightArray[1::2] = extraPhysicalWeights
+	else:
+		extraWeightArray[1::2] = boneWeightsArray[:,8:]
 	extraBufferStream.write(extraWeightArray.tobytes())
 	
 	
@@ -1971,7 +2121,7 @@ class sizeData:
 			
 		self.VERTEX_ELEMENT_SIZE = 8
 
-def ParsedREMeshToREMesh(parsedMesh,meshVersion):
+def ParsedREMeshToREMesh(parsedMesh,meshVersion,normalizeWeights=True):
 	print(f"Mesh Version:{meshVersion}")
 	version = meshFileVersionToNewVersionDict.get(meshVersion,getNearestRemapVersion(meshVersion)) 
 	print(f"Remapped Version:{version}")
@@ -1998,6 +2148,8 @@ def ParsedREMeshToREMesh(parsedMesh,meshVersion):
 	reMesh = REMesh()
 	
 	reMesh.fileHeader.version = meshFileVersionToInternalVersionDict.get(meshVersion,getNearestRemapVersion(meshVersion))
+	if version == VERSION_DD2_TU3_2:
+		reMesh.fileHeader.bufferCount = 1
 	#TODO Fix shadow mesh export, causes game to crash. It seems shadow meshes can't have unique lods, even if the sub mesh offsets are still shared. They might only be able to use the existing full lods from the main mesh
 	#parsedMesh.shadowMeshLODList.clear()
 	
@@ -2015,8 +2167,14 @@ def ParsedREMeshToREMesh(parsedMesh,meshVersion):
 		if version == VERSION_SF6:
 			reMesh.lodHeader.skinWeightCount = 9
 		elif version == VERSION_MHWILDS:
-			reMesh.lodHeader.skinWeightCount = 25#Not sure why but this fixes monsters causing crashes and dead hitbox issues
-		elif version == VERSION_PRAGDEMO:
+			# Wilds declares 27 when the type-7 extended-weight element is
+			# exported. Declaring 25 makes the runtime select the six-influence
+			# skinning layout even though the 12-influence bytes are present.
+			reMesh.lodHeader.skinWeightCount = 27 if parsedMesh.bufferHasExtraWeight else 25
+			#print(f"Wilds V13 skinning header: extraWeight={int(bool(parsedMesh.bufferHasExtraWeight))}; skinWeightCount={reMesh.lodHeader.skinWeightCount}")
+		elif version == VERSION_ONIWOTS:
+			reMesh.lodHeader.skinWeightCount = 27 if parsedMesh.bufferHasExtraWeight else 25
+		elif VERSION_PRAGDEMO <= version < VERSION_RE9:
 			reMesh.lodHeader.skinWeightCount = 27#
 		elif version == VERSION_RE9:
 			reMesh.lodHeader.skinWeightCount = 18#
@@ -2088,13 +2246,13 @@ def ParsedREMeshToREMesh(parsedMesh,meshVersion):
 						
 						if len(parsedSubMesh.weightIndicesList) != 0 and len(parsedSubMesh.weightIndicesList) == len(parsedSubMesh.weightList):
 							if parsedMesh.bufferHasExtraWeight and len(parsedSubMesh.extraWeightIndicesList) != 0 and len(parsedSubMesh.extraWeightIndicesList) == len(parsedSubMesh.extraWeightList):
-								WriteToWeightBufferExtended(weightBuffer,parsedSubMesh.weightList,parsedSubMesh.weightIndicesList,extraWeightBuffer,parsedSubMesh.extraWeightList,parsedSubMesh.extraWeightIndicesList,isSixWeight)
+								WriteToWeightBufferExtended(weightBuffer,parsedSubMesh.weightList,parsedSubMesh.weightIndicesList,extraWeightBuffer,parsedSubMesh.extraWeightList,parsedSubMesh.extraWeightIndicesList,isSixWeight,normalizeWeights,version)
 							else:
-								WriteToWeightBuffer(weightBuffer,parsedSubMesh.weightList,parsedSubMesh.weightIndicesList,isSixWeight)
+								WriteToWeightBuffer(weightBuffer,parsedSubMesh.weightList,parsedSubMesh.weightIndicesList,isSixWeight,normalizeWeights,version)
 						
 						#DD2 shapekeys
 						if len(parsedSubMesh.secondaryWeightIndicesList) != 0 and len(parsedSubMesh.secondaryWeightIndicesList) == len(parsedSubMesh.secondaryWeightList):
-							WriteToWeightBuffer(secondaryWeightBuffer,parsedSubMesh.secondaryWeightList,parsedSubMesh.secondaryWeightIndicesList,isSixWeight)
+							WriteToWeightBuffer(secondaryWeightBuffer,parsedSubMesh.secondaryWeightList,parsedSubMesh.secondaryWeightIndicesList,isSixWeight,normalizeWeights)
 						
 						
 						#Add vertex color if it's missing and other meshes have it
@@ -2199,7 +2357,7 @@ def ParsedREMeshToREMesh(parsedMesh,meshVersion):
 						if parsedSubMesh.uv2List != []:
 							WriteToUVBuffer(UV2Buffer,parsedSubMesh.uv2List)
 						if parsedSubMesh.weightIndicesList != [] and parsedSubMesh.weightList != []:
-							WriteToWeightBuffer(weightBuffer,parsedSubMesh.weightList,parsedSubMesh.weightIndicesList)
+							WriteToWeightBuffer(weightBuffer,parsedSubMesh.weightList,parsedSubMesh.weightIndicesList,False,normalizeWeights)
 						if parsedSubMesh.colorList != []:
 							WriteToColorBuffer(colorBuffer,parsedSubMesh.colorList)
 						
@@ -2253,6 +2411,28 @@ def ParsedREMeshToREMesh(parsedMesh,meshVersion):
 		reMesh.skeletonHeader.boneInverseMatrixOffset = reMesh.skeletonHeader.boneWorldMatrixOffset + reMesh.skeletonHeader.boneCount * sd.MATRIX_SIZE
 		
 		currentOffset = reMesh.skeletonHeader.boneInverseMatrixOffset + reMesh.skeletonHeader.boneCount * sd.MATRIX_SIZE
+	# Wilds blend metadata is derived from the parsed Blender shape keys. The
+	# focused helper owns only the Wilds-specific table and payload layout.
+	blendShapePlan = None
+	if version == VERSION_MHWILDS:
+		from .mhwilds_blendshape import build_blend_shape_plan
+		blendShapePlan = build_blend_shape_plan(
+			parsedMesh, parsedSubMeshToSubMeshDataDict
+		)
+		if blendShapePlan is not None:
+			from .mhwilds_blendshape import (
+				relocate_blend_shape_header,
+				reserve_normal_recalc_marker,
+			)
+			currentOffset = reserve_normal_recalc_marker(
+				reMesh, currentOffset
+			)
+			reMesh.fileHeader.blendShapesOffset = currentOffset
+			reMesh.blendShapeHeader = blendShapePlan["header"]
+			currentOffset = relocate_blend_shape_header(
+				reMesh.blendShapeHeader, currentOffset, version
+			)
+			reMesh._blendShapeExportPlan = blendShapePlan
 	#Name lists and remaps
 	currentNameIndex = 0
 	for index,materialName in enumerate(parsedMesh.materialNameList):
@@ -2264,13 +2444,23 @@ def ParsedREMeshToREMesh(parsedMesh,meshVersion):
 			reMesh.rawNameList.append(bone.boneName)
 			reMesh.boneNameRemapList.append(currentNameIndex)
 			currentNameIndex += 1
-	#TODO Blend Shape Names Remap
+	if blendShapePlan is not None:
+		for shapeName in blendShapePlan["shapeRemapNames"]:
+			reMesh.rawNameList.append(shapeName)
+			reMesh.blendShapeNameRemapList.append(currentNameIndex)
+			currentNameIndex += 1
 	
 	reMesh.fileHeader.materialNameRemapOffset = currentOffset
 	currentOffset = getPaddedPos(currentOffset + (len(reMesh.materialNameRemapList)*2), 16)
 	if parsedMesh.skeleton != None:
 		reMesh.fileHeader.boneNameRemapOffset = currentOffset
 		currentOffset = getPaddedPos(currentOffset + (len(reMesh.boneNameRemapList)*2), 16)
+	if blendShapePlan is not None:
+		reMesh.fileHeader.blendShapeNameOffset = currentOffset
+		currentOffset = getPaddedPos(
+			currentOffset + len(reMesh.blendShapeNameRemapList) * 2,
+			16,
+		)
 	
 	reMesh.fileHeader.nameOffsetsOffset = currentOffset
 	currentOffset = getPaddedPos(currentOffset + (len(reMesh.rawNameList)*8), 16)#Get the position after all string offsets
@@ -2363,6 +2553,10 @@ def ParsedREMeshToREMesh(parsedMesh,meshVersion):
 	reMesh.meshBufferHeader.mainVertexElementCount = reMesh.meshBufferHeader.vertexElementCount
 	reMesh.meshBufferHeader.vertexElementOffset = reMesh.fileHeader.meshOffset + sd.VERTEX_ELEMENT_OFFSET
 	reMesh.meshBufferHeader.vertexBufferOffset = getPaddedPos(reMesh.meshBufferHeader.vertexElementOffset +  reMesh.meshBufferHeader.vertexElementCount * sd.VERTEX_ELEMENT_SIZE,16)
+	if version == VERSION_DD2_TU3_2:
+		reMesh.meshBufferHeader.blendShapeOffset = -reMesh.meshBufferHeader.vertexBufferOffset
+		reMesh.meshBufferHeader.blendShapeOffset2 = -reMesh.meshBufferHeader.vertexBufferOffset
+		reMesh.meshBufferHeader.blendShapeOffset3 = -reMesh.meshBufferHeader.vertexBufferOffset
 	
 	#TODO check on this, padding vertex buffer size might cause issues in some games
 	reMesh.meshBufferHeader.vertexBufferSize = getPaddedPos(currentBufferOffset,16)
@@ -2401,13 +2595,21 @@ def ParsedREMeshToREMesh(parsedMesh,meshVersion):
 			reMesh.meshBufferHeader.sunbreakOffset = reMesh.meshBufferHeader.vertexBufferOffset + reMesh.meshBufferHeader.totalBufferSize
 			
 			reMesh.meshBufferHeader.secondaryWeightBuffer = secondaryWeightBuffer.getvalue()
-			reMesh.meshBufferHeader.sunbreakSecondUnknown = len(reMesh.meshBufferHeader.secondaryWeightBuffer)
+			if version == VERSION_DD2_TU3_2:
+				reMesh.meshBufferHeader.shapeKeyWeightBufferSize = len(reMesh.meshBufferHeader.secondaryWeightBuffer)
+			else:
+				reMesh.meshBufferHeader.sunbreakSecondUnknown = len(reMesh.meshBufferHeader.secondaryWeightBuffer)
 			currentOffset = reMesh.meshBufferHeader.sunbreakOffset + len(reMesh.meshBufferHeader.secondaryWeightBuffer)
 	reMesh.fileHeader.fileSize = currentOffset
 	
 	
 	
-	reMesh.fileHeader.contentFlag.setBitFlag(unknFlag16,unknFlag10,hasUnknFlag8 = True, hasGroupPivot = reMesh.floatsHeader != None, hasBlendShape = reMesh.blendShapeHeader != None, hasSkeleton = reMesh.skeletonHeader != None, hasAABB = reMesh.boneBoundingBoxHeader != None)
+	if version == VERSION_DD2_TU3_2:
+		# Vanilla meshes use bit 12 and only set the vertex-color bit when colors exist. Don't forget that the buffer count is kept in the header.
+		reMesh.fileHeader.contentFlag.setBitFlag(False, False, hasUnknFlag8 = parsedMesh.bufferHasColor, hasGroupPivot = reMesh.floatsHeader != None, hasBlendShape = reMesh.blendShapeHeader != None, hasSkeleton = reMesh.skeletonHeader != None, hasAABB = reMesh.boneBoundingBoxHeader != None)
+		reMesh.fileHeader.contentFlag.bitFlag |= 1 << 12
+	else:
+		reMesh.fileHeader.contentFlag.setBitFlag(unknFlag16,unknFlag10,hasUnknFlag8 = True, hasGroupPivot = reMesh.floatsHeader != None, hasBlendShape = reMesh.blendShapeHeader != None, hasSkeleton = reMesh.skeletonHeader != None, hasAABB = reMesh.boneBoundingBoxHeader != None)
 	vertexPosBuffer.close()
 	norTanBuffer.close()
 	UVBuffer.close()
@@ -2417,7 +2619,9 @@ def ParsedREMeshToREMesh(parsedMesh,meshVersion):
 	extraWeightBuffer.close()
 	faceBuffer.close()
 	secondaryWeightBuffer.close()
-				
+	if version == VERSION_MHWILDS and blendShapePlan is not None:
+		from .mhwilds_blendshape import finalize_mhwilds_export
+		finalize_mhwilds_export(parsedMesh, reMesh)
 	return reMesh
 #---RE MESH IO FUNCTIONS---#
 
@@ -2472,6 +2676,21 @@ def readREMesh(filepath,lodTarget = None):
 	file.close()
 	return reMeshFile
 def writeREMesh(reMeshFile,filepath):
+	# Dispatch custom blendshape writers by generic handler key. Monster Hunter
+	# Wilds is currently the only registered implementation.
+	blendShapeWriter = getattr(reMeshFile, "_blendShapeWriter", None)
+	if blendShapeWriter is not None:
+		try:
+			meshVersion = int(os.path.splitext(filepath)[1].replace(".",""))
+		except:
+			meshVersion = 0
+		if blendShapeWriter == "MHWILDS" and meshVersion == 241111606:
+			from .mhwilds_blendshape import write_mhwilds_mesh
+			return write_mhwilds_mesh(reMeshFile, filepath)
+		raise RuntimeError(
+			f"No blendshape writer registered for {blendShapeWriter} "
+			f"and mesh version {meshVersion}"
+		)
 	print("Writing to " + filepath)
 	try:
 		file = open(filepath,"wb",buffering=8192)
@@ -2486,4 +2705,3 @@ def writeREMesh(reMeshFile,filepath):
 	reMeshFile.meshVersion = meshVersion
 	reMeshFile.write(file,version)
 	file.close()
-
