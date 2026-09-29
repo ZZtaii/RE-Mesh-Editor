@@ -860,8 +860,10 @@ def newNAMNode (nodeTree,textureType,matInfo):
 	matInfo["normalNodeLayerGroup"].addMixLayer(combineRGBNode.outputs["Color"])
 	
 	if textureType == "StitchMap":
-		matInfo["alphaSocket"] = separateRGBNode.outputs["Blue"]
-		matInfo["isAlphaBlend"] = True
+		# SF6 packs stitch data here; this channel is not material opacity.
+		if matInfo["gameName"] != "SF6":
+			matInfo["alphaSocket"] = separateRGBNode.outputs["Blue"]
+			matInfo["isAlphaBlend"] = True
 	else:
 		matInfo["alphaSocket"] = imageNode.outputs["Alpha"]
 	if bpy.app.version < (4,2,0):

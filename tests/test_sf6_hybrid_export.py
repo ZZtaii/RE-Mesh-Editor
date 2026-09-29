@@ -54,9 +54,49 @@ def geometry_equal(a, b):
             assert new_stride == stride
             start, count = old["start"], old["count"]
             new_start = new["start"]
-            assert (a.data[offset + start * stride:offset + (start + count) * stride]
-                    == b.data[new_offset + new_start * stride:
-                              new_offset + (new_start + count) * stride]), (part_key, kind)
+            left = a.data[offset + start * stride:offset + (start + count) * stride]
+            right = b.data[new_offset + new_start * stride:
+                           new_offset + (new_start + count) * stride]
+            if kind == 1:
+                _tangent_rounding_equal(left, right, part_key)
+            else:
+                assert left == right, (part_key, kind)
+
+
+def _tangent_rounding_equal(left, right, label):
+    """Allow only one tangent quantum of Blender's existing MikkTSpace noise.
+
+    Repeated ordinary exports with identical positions, corner normals, UVs and
+    faces can cross a floor boundary by one float32 ULP. Normals, padding and
+    handedness must remain exact; no other stream gets a tolerance.
+    """
+    left = np.frombuffer(left, np.int8).reshape(-1, 8)
+    right = np.frombuffer(right, np.int8).reshape(-1, 8)
+    assert np.array_equal(left[:, :4], right[:, :4]), (label, 'normals/padding')
+    assert np.array_equal(left[:, 7], right[:, 7]), (label, 'tangent handedness')
+    error = np.abs(left[:, 4:7].astype(np.int16) - right[:, 4:7].astype(np.int16))
+    assert np.max(error, initial=0) <= 1, (label, 'tangent quantization')
+
+
+def hybrid_files_equal(a, b, ordinary):
+    """All file bytes match except bounded tangent rounding in copied GPU rows."""
+    geometry_equal(a, b)
+    assert len(a.data) == len(b.data)
+    left, right = bytearray(a.data), bytearray(b.data)
+    # Hybrid retains the original ordinary GPU buffer and appends its active
+    # shape-aware buffer. Both contain the same bounded tangent variation.
+    for layout in (ordinary, a):
+        stride, offset = layout.elements[1]
+        assert stride == 8
+        for part in layout.parts:
+            if part['lod'] != 0:
+                continue
+            begin, end = offset + part['start'] * stride, offset + (part['start'] + part['count']) * stride
+            _tangent_rounding_equal(left[begin:end], right[begin:end], 'GPU copy')
+            for lane in (4, 5, 6):
+                left[begin + lane:end:stride] = bytes(part['count'])
+                right[begin + lane:end:stride] = bytes(part['count'])
+    assert left == right, 'Hybrid changed file bytes outside bounded tangent rounding'
 
 
 def main():
@@ -96,6 +136,7 @@ def main():
         ordinary_path = root / "ordinary" / args.source_file.name
         ordinary_path.parent.mkdir()
         ordinary_options = dict(preserve, exportBlendShapes=False,
+                                splitLoopVertices=False,
                                 selectedOnly=False, exportAllLODs=True,
                                 useBlenderMaterialName=False,
                                 preserveBoneMatrices=True,
@@ -140,8 +181,9 @@ def main():
         target = root / "hybrid" / args.source_file.name
         target.parent.mkdir()
         assert mesh_io.exportREMeshFile(str(target), dict(
-            ordinary_options, exportBlendShapes=True, sf6HybridPreserve=True))
-        assert target.read_bytes() == output_bytes
+            ordinary_options, exportBlendShapes=True, sf6HybridPreserve=True,
+            splitLoopVertices=True))
+        hybrid_files_equal(output, sf6.SourceMesh(target.read_bytes()), ordinary)
         passed("opt_in_direct_export_matches_core")
 
         # Selection must use the selected retail parts alone, including a
@@ -212,7 +254,7 @@ def main():
         roundtrip.parent.mkdir()
         assert mesh_io.exportREMeshFile(str(roundtrip), dict(
             targetCollection=imported.name, exportBlendShapes=True, rotate90=True))
-        assert roundtrip.read_bytes() == output_bytes
+        assert roundtrip.read_bytes() == target.read_bytes()
         passed("fresh_hybrid_import_strict_preserve_is_byte_identical")
 
     if args.report_json:

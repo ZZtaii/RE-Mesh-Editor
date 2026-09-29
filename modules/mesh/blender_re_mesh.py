@@ -20,12 +20,12 @@ from math import radians,floor,sqrt
 from mathutils import Vector,Matrix
 from itertools import chain, repeat, islice
 from .file_re_mesh import readREMesh,writeREMesh,ParsedREMeshToREMesh,Sphere,AABB,Matrix4x4,meshFileVersionToGameNameDict
-from .re_mesh_parse import ParsedREMesh,VisconGroup,LODLevel,SubMesh,ParsedBone,Skeleton
+from .re_mesh_parse import ParsedREMesh,VisconGroup,LODLevel,SubMesh,ParsedBone,Skeleton,BlendShape
 from ..mdf.file_re_mdf import readMDF
 from ..mdf.blender_re_mesh_mdf import findMDFPathFromMeshPath,importMDF
 from ..mdf.blender_re_mdf import importMDFFile
 from ..sfur.blender_re_sfur import importSFurFile,findSFurPathFromMeshPath
-from .re_mesh_export_errors import addErrorToDict,printErrorDict,showREMeshErrorWindow
+from .re_mesh_export_errors import addErrorToDict,printErrorDict,showREMeshErrorWindow,errorInfoDict
 from ..gen_functions import splitNativesPath,raiseWarning
 from ..blender_utils import showErrorMessageBox,showMessageBox
 from ..hashing.mmh3.pymmh3 import hashUTF8
@@ -50,6 +50,70 @@ def triangulateMesh(mesh):
     #if custom_normals:
         #mesh.normals_split_custom_set_from_vertices(custom_normals)
 
+SIX_WEIGHT_GAME_NAMES = frozenset(("SF6", "MHWILDS", "PRAG", "MHS3", "ONIWOTS"))
+EXTENDED_WEIGHT_GAME_NAMES = frozenset(("MHWILDS", "PRAG", "MHS3", "ONIWOTS"))
+
+def getMeshWeightLimits(gameName):
+	if gameName in SIX_WEIGHT_GAME_NAMES:
+		baseWeights = 6
+		maxWeightedBones = 1024
+	else:
+		baseWeights = 8
+		maxWeightedBones = 256
+	# DD2's 16 total slots are two separate 8-weight arrays.
+	maxTotalWeights = baseWeights * 2 if gameName in EXTENDED_WEIGHT_GAME_NAMES or gameName == "DD2" else baseWeights
+	return (baseWeights, maxTotalWeights, maxWeightedBones)
+
+def limitTotalWeights(obj, limit, separateShapeKeyWeights=False, allowedGroupNames=None):
+	if obj is None or obj.type != "MESH" or len(obj.vertex_groups) == 0:
+		return
+	limit = max(1, min(32, int(limit)))
+	if allowedGroupNames is not None:
+		# Export calls this on an evaluated clone. Paint/modifier mask groups
+		# do not represent bone influences and must neither occupy slots nor
+		# be serialized as fallback weights on the first bone.
+		allowedGroupNames = frozenset(allowedGroupNames)
+		groupsByIndex = {group.index: group for group in obj.vertex_groups}
+		for vertex in obj.data.vertices:
+			# Snapshot integer IDs before removals move Blender's RNA entries.
+			for groupIndex in [assignment.group for assignment in vertex.groups]:
+				group = groupsByIndex.get(groupIndex)
+				if group is not None and group.name not in allowedGroupNames:
+					group.remove([vertex.index])
+	if separateShapeKeyWeights:
+		limit = min(limit, 8)
+		groupsByIndex = {group.index: group for group in obj.vertex_groups}
+		for vertex in obj.data.vertices:
+			primaryWeights = []
+			shapeKeyWeights = []
+			for assignment in vertex.groups:
+				group = groupsByIndex.get(assignment.group)
+				if group is not None and assignment.weight > 0:
+					weights = shapeKeyWeights if group.name.startswith("SHAPEKEY_") else primaryWeights
+					weights.append((group, assignment.weight))
+			for bank in (primaryWeights, shapeKeyWeights):
+				bank.sort(key=lambda item: item[1], reverse=True)
+				for group, _ in bank[limit:]:
+					group.remove([vertex.index])
+		return
+	viewLayer = bpy.context.view_layer
+	previousActive = viewLayer.objects.active
+	previousSelection = list(bpy.context.selected_objects)
+	try:
+		bpy.ops.object.select_all(action='DESELECT')
+		obj.select_set(True)
+		viewLayer.objects.active = obj
+		obj.data.use_paint_mask = False
+		obj.data.use_paint_mask_vertex = False
+		bpy.ops.object.vertex_group_limit_total(limit=limit)
+	finally:
+		bpy.ops.object.select_all(action='DESELECT')
+		for selectedObj in previousSelection:
+			if selectedObj.name in bpy.context.view_layer.objects:
+				selectedObj.select_set(True)
+		if previousActive is not None and previousActive.name in bpy.context.view_layer.objects:
+			viewLayer.objects.active = previousActive
+
 def pad_infinite(iterable, padding=None):
 	return chain(iterable, repeat(padding))
 
@@ -63,6 +127,166 @@ def normalize(lst):
 		return lst
 def normalizeVec(vec):
     return Vector(vec).normalized()
+
+BLEND_SHAPE_EXPORT_GAMES = frozenset(("MHWILDS",))
+DUMMY_SHAPEKEY_PREFIX = "DUMMY_"
+
+
+def _game_supports_blend_shapes(gameName):
+	return str(gameName) in BLEND_SHAPE_EXPORT_GAMES
+
+
+def _get_export_shape_keys(meshData):
+	if meshData.shape_keys is None:
+		return (None, [])
+	keyBlocks = meshData.shape_keys.key_blocks
+	if len(keyBlocks) <= 1:
+		return (None, [])
+	basis = keyBlocks.get("Basis") or keyBlocks[0]
+	shapeKeys = [
+		key for key in keyBlocks
+		if key != basis
+		and not str(key.name).startswith(DUMMY_SHAPEKEY_PREFIX)
+	]
+	skippedDummyKeys = [
+		str(key.name) for key in keyBlocks
+		if key != basis
+		and str(key.name).startswith(DUMMY_SHAPEKEY_PREFIX)
+	]
+	if skippedDummyKeys:
+		print(
+			"Skipped DUMMY_ shape keys during blendshape export: "
+			+ ", ".join(skippedDummyKeys)
+		)
+	return (basis, shapeKeys)
+
+def _temporarily_zero_shape_key_values(obj):
+	if obj.data is None or obj.data.shape_keys is None:
+		return []
+	stored = []
+	for key in obj.data.shape_keys.key_blocks:
+		stored.append((key, key.value))
+		if key.name != "Basis":
+			key.value = 0.0
+	return stored
+
+def _restore_shape_key_values(storedValues):
+	for key, value in storedValues:
+		key.value = value
+
+def _build_blend_shape_entries_for_export(
+	rawsubmesh,
+	sourceVertexIndexList,
+	transformMatrix,
+	gameName,
+	evaluatedBasisMesh,
+	exportShapeKeys=True,
+):
+	"""Evaluate each Blender key through the same geometry path as the basis."""
+	if (
+		not _game_supports_blend_shapes(gameName)
+		or evaluatedBasisMesh is None
+		or not exportShapeKeys
+	):
+		return []
+	basis, shapeKeys = _get_export_shape_keys(rawsubmesh.data)
+	if basis is None or not shapeKeys:
+		return []
+	stored = _temporarily_zero_shape_key_values(rawsubmesh)
+	result = []
+	try:
+		rawsubmesh.data.update()
+		bpy.context.view_layer.update()
+		basisCoordinates = [
+			vertex.co.copy() for vertex in evaluatedBasisMesh.vertices
+		]
+		depsgraph = bpy.context.evaluated_depsgraph_get()
+		rawBasisMesh = bpy.data.meshes.new_from_object(
+			rawsubmesh.evaluated_get(depsgraph)
+		)
+		if any(
+			len(face.vertices) != 3 for face in rawBasisMesh.polygons
+		):
+			triangulateMesh(rawBasisMesh)
+		rawBasisMesh.transform(transformMatrix)
+
+		def positionKey(coordinate):
+			return (
+				round(float(coordinate.x), 6),
+				round(float(coordinate.y), 6),
+				round(float(coordinate.z), 6),
+			)
+
+		positionToRawIndices = {}
+		for rawIndex, vertex in enumerate(rawBasisMesh.vertices):
+			positionToRawIndices.setdefault(
+				positionKey(vertex.co), []
+			).append(rawIndex)
+		mappedSourceIndices = []
+		for sourceIndex in sourceVertexIndexList:
+			sourceIndex = int(sourceIndex)
+			if 0 <= sourceIndex < len(basisCoordinates):
+				candidates = positionToRawIndices.get(
+					positionKey(basisCoordinates[sourceIndex]), []
+				)
+				if sourceIndex in candidates:
+					mappedSourceIndices.append(sourceIndex)
+				elif candidates:
+					mappedSourceIndices.append(candidates[0])
+				else:
+					mappedSourceIndices.append(-1)
+			else:
+				mappedSourceIndices.append(-1)
+		for shapeKey in shapeKeys:
+			for key in rawsubmesh.data.shape_keys.key_blocks:
+				if key.name != "Basis":
+					key.value = 0.0
+			shapeKey.value = 1.0
+			rawsubmesh.data.update()
+			bpy.context.view_layer.update()
+			depsgraph = bpy.context.evaluated_depsgraph_get()
+			shapeMesh = bpy.data.meshes.new_from_object(
+				rawsubmesh.evaluated_get(depsgraph)
+			)
+			try:
+				if any(
+					len(face.vertices) != 3
+					for face in shapeMesh.polygons
+				):
+					triangulateMesh(shapeMesh)
+				shapeMesh.transform(transformMatrix)
+				deltas = []
+				for rowIndex, sourceIndex in enumerate(
+					sourceVertexIndexList
+				):
+					sourceIndex = int(sourceIndex)
+					mappedIndex = mappedSourceIndices[rowIndex]
+					if (
+						0 <= mappedIndex < len(shapeMesh.vertices)
+						and mappedIndex < len(rawBasisMesh.vertices)
+					):
+						delta = (
+							shapeMesh.vertices[mappedIndex].co
+							- rawBasisMesh.vertices[mappedIndex].co
+						)
+						deltas.append(
+							(float(delta.x), float(delta.y), float(delta.z))
+						)
+					else:
+						deltas.append((0.0, 0.0, 0.0))
+			finally:
+				bpy.data.meshes.remove(shapeMesh)
+			entry = BlendShape()
+			entry.blendShapeName = shapeKey.name
+			entry.deltas = np.asarray(deltas, dtype=np.float32)
+			result.append(entry)
+	finally:
+		if "rawBasisMesh" in locals():
+			bpy.data.meshes.remove(rawBasisMesh)
+		_restore_shape_key_values(stored)
+		rawsubmesh.data.update()
+		bpy.context.view_layer.update()
+	return result
 def dist(a, b) -> float:
     return  ((a[0] - b[0])**2 + (a[1] - b[1])**2 + (a[2] - b[2])**2)**0.5
 def bounding_sphere_ritter(points):
@@ -263,7 +487,49 @@ def importSkeleton(parsedSkeleton,armatureName,collection,rotate90,targetArmatur
 
 IMPORT_EXTRA_WEIGHTS = True
 
-def importMesh(meshName = "newMesh",vertexList = [],faceList = [],vertexNormalList = [],vertexColor0List = [],vertexColor1List = [],UV0List = [],UV1List = [],UV2List = [],boneNameList = [],vertexGroupWeightList = [],vertexGroupBoneIndicesList = [],extraVertexGroupWeightList = [],extraVertexGroupBoneIndicesList = [],vertexGroupWeightListSecondary = [],vertexGroupBoneIndicesListSecondary = [],boneNameRemapList = [],material="Material",armature = None,collection = None,rotate90 = True,blendShapeList = []):
+MHWILDS_NORMAL_GROUP_ATTRIBUTE = "MHWILDS_NormalGroup"
+MHWILDS_NORMAL_PIVOT_ATTRIBUTE = "MHWILDS_NormalPivot"
+MHWILDS_NORMAL_PIVOT0_ATTRIBUTE = "MHWILDS_NormalPivot0"
+MHWILDS_NORMAL_PIVOT255_ATTRIBUTE = "MHWILDS_NormalPivot255"
+
+def _mhwilds_create_point_int_attribute(meshData, attributeName, values):
+	values = [] if values is None else list(values)
+	if len(values) != len(meshData.vertices):
+		return False
+	attribute = meshData.attributes.get(attributeName)
+	if attribute is None:
+		attribute = meshData.attributes.new(
+			name=attributeName, type="INT", domain="POINT"
+		)
+	if attribute.domain != "POINT" or attribute.data_type != "INT":
+		raise RuntimeError(
+			f"{attributeName} must be a point-domain integer attribute"
+		)
+	for index, value in enumerate(values):
+		attribute.data[index].value = int(value)
+	return True
+
+def _mhwilds_read_point_int_attribute(
+	meshData, attributeName, sourceVertexIndices
+):
+	attribute = meshData.attributes.get(attributeName)
+	if attribute is None:
+		return []
+	if attribute.domain != "POINT" or attribute.data_type != "INT":
+		raise RuntimeError(
+			f"{attributeName} must be a point-domain integer attribute"
+		)
+	result = []
+	for sourceIndex in sourceVertexIndices:
+		sourceIndex = int(sourceIndex)
+		if sourceIndex < 0 or sourceIndex >= len(attribute.data):
+			raise RuntimeError(
+				f"{attributeName} vertex {sourceIndex} is out of range"
+			)
+		result.append(int(attribute.data[sourceIndex].value))
+	return result
+
+def importMesh(meshName = "newMesh",vertexList = [],faceList = [],vertexNormalList = [],vertexColor0List = [],vertexColor1List = [],UV0List = [],UV1List = [],UV2List = [],boneNameList = [],vertexGroupWeightList = [],vertexGroupBoneIndicesList = [],extraVertexGroupWeightList = [],extraVertexGroupBoneIndicesList = [],vertexGroupWeightListSecondary = [],vertexGroupBoneIndicesListSecondary = [],boneNameRemapList = [],material="Material",armature = None,collection = None,rotate90 = True,blendShapeList = [],importBlendShapes = False,normalGroupList = [],normalPivotGroupList = [],normalPivot0List = [],normalPivot255List = []):
 	#print(f"\n{meshName}, Vertex Count: {len(vertexList)}, Face Count: {len(faceList)}\n")
 	#print(vertexList)
 	#print()
@@ -287,29 +553,19 @@ def importMesh(meshName = "newMesh",vertexList = [],faceList = [],vertexNormalLi
 	if faceList == []:
 		raise Exception("Invalid mesh, submesh has no faces")
 	meshData.from_pydata(vertexList, [], faceList)
+	_mhwilds_create_point_int_attribute(
+		meshData, MHWILDS_NORMAL_GROUP_ATTRIBUTE, normalGroupList
+	)
+	_mhwilds_create_point_int_attribute(
+		meshData, MHWILDS_NORMAL_PIVOT_ATTRIBUTE, normalPivotGroupList
+	)
+	_mhwilds_create_point_int_attribute(
+		meshData, MHWILDS_NORMAL_PIVOT0_ATTRIBUTE, normalPivot0List
+	)
+	_mhwilds_create_point_int_attribute(
+		meshData, MHWILDS_NORMAL_PIVOT255_ATTRIBUTE, normalPivot255List
+	)
 	#print(f"DEBUG:\t Loaded {len(vertexList)} verts and {len(faceList)} faces")
-	#Import vertex normals
-	if vertexNormalList != []:
-		
-		
-		meshData.update(calc_edges=True)
-		#print(f"DEBUG:\tUpdated mesh data")
-		meshData.polygons.foreach_set("use_smooth", [True] * len(meshData.polygons))
-		#print(f"DEBUG:\tSet use smooth")
-		#print(f"DEBUG:\tVertex normal count {len(vertexNormalList)}")
-		meshData.validate()#Must call validate before setting custom normals or it can cause rare crashes when importing
-		meshData.normals_split_custom_set_from_vertices([normalizeVec(v) for v in vertexNormalList])
-		
-		#print(f"DEBUG:\tSet custom normals")
-		if bpy.app.version < (4,0,0):
-			meshData.use_auto_smooth = True
-			meshData.calc_normals_split()
-		#print(f"DEBUG:\t Loaded vertex normals")
-		"""
-		meshData.use_auto_smooth = True
-		meshData.polygons.foreach_set("use_smooth", [True] * len(meshData.polygons))
-		meshData.normals_split_custom_set_from_vertices(vertexNormalList)
-		"""
 	#Import UV Layers
 	UVLayerList = (UV0List,UV1List,UV2List)
 	for layerIndex,layer in enumerate(UVLayerList):
@@ -394,7 +650,7 @@ def importMesh(meshName = "newMesh",vertexList = [],faceList = [],vertexNormalLi
 				#print(vertexIndex)
 				#print(boneIndexList)
 				for weightIndex, boneIndex in enumerate(boneIndexList):
-					if vertexGroupWeightList[vertexIndex][weightIndex] > 0:
+					if vertexGroupWeightListSecondary[vertexIndex][weightIndex] > 0:
 						boneName = "SHAPEKEY_"+boneNameList[boneIndex]
 						if len(boneName) > 63:
 							boneName = f"#HASHED_{str(hashUTF8(boneName))}"
@@ -411,9 +667,33 @@ def importMesh(meshName = "newMesh",vertexList = [],faceList = [],vertexNormalLi
 		#meshObj.matrix_parent_inverse = armature.matrix_world.inverted()
 	if rotate90:
 		meshObj.data.transform(rotate90Matrix)
-			
-		
-		#meshObj.matrix_world = meshObj.matrix_world @ rotate90Matrix
+
+	# This import has been moved after the rotation
+	if vertexNormalList != []:
+		meshObj.data.update(calc_edges=True)
+		meshObj.data.polygons.foreach_set("use_smooth", [True] * len(meshObj.data.polygons))
+		meshObj.data.validate()
+
+		transformedNormals = []
+
+		for n in vertexNormalList:
+			normal = Vector(n)
+
+			if rotate90:
+				normal = rotate90Matrix.to_3x3() @ normal
+
+			if normal.length != 0:
+				normal.normalize()
+
+			transformedNormals.append(normal)
+
+		meshObj.data.normals_split_custom_set_from_vertices(transformedNormals)
+
+		if bpy.app.version < (4,0,0):
+			meshObj.data.use_auto_smooth = True
+			meshObj.data.calc_normals_split()
+
+		meshObj.data.update()
 	if material != None:
 		meshObj.data.materials.append(material)
 	if collection != None:
@@ -422,28 +702,32 @@ def importMesh(meshName = "newMesh",vertexList = [],faceList = [],vertexNormalLi
 		bpy.context.scene.collection.objects.link(meshObj)
 	
 	#Import Blend Shapes
-	if blendShapeList != []:
+	if importBlendShapes and blendShapeList != []:
 		skB = meshObj.shape_key_add(name = "Basis")
 		skB.interpolation = 'KEY_LINEAR'
-		print(meshObj.name)
+		skB.value = 0.0
 		
 		for blendShapeEntry in blendShapeList:
-				name = blendShapeEntry.blendShapeName
-				print(name)
-				#print(blendShapeEntry.deltas)
-				deltas = [Vector (val) for val in blendShapeEntry.deltas]
-				#print(deltas)
-				sk = meshObj.shape_key_add(name = name)
-				sk.interpolation = 'KEY_LINEAR'
-				print(f"mesh vertices: {len(meshObj.data.vertices)}")
-				print(f"delta vertices: {len(deltas)}")
-				#if len(deltas) == len(meshObj.data.vertices):
-				for i in range(len(meshObj.data.vertices)):
-					sk.data[i].co = meshObj.data.vertices[i].co + deltas[i]
+			name = blendShapeEntry.blendShapeName
+			deltas = [Vector(val) for val in blendShapeEntry.deltas]
+			sk = meshObj.shape_key_add(name = name)
+			sk.interpolation = 'KEY_LINEAR'
+			sk.value = 0.0
+			sk.slider_min = 0.0
+			sk.slider_max = 1.0
+			for i in range(len(meshObj.data.vertices)):
+				delta = (
+					deltas[i]
+					if i < len(deltas)
+					else Vector((0.0, 0.0, 0.0))
+				)
+				if rotate90:
+					delta = rotate90Matrix.to_3x3() @ delta
+				sk.data[i].co = meshObj.data.vertices[i].co + delta
 	
 	return meshObj
 
-def importLODGroup(parsedMesh,meshType,meshCollection,materialDict,armatureObj,hiddenCollectionSet,meshOffsetDict,importAllLODs = False,createCollections = True,importShadowMeshes = False,rotate90 = True,mergeGroups = False,importBoundingBoxes = False):
+def importLODGroup(parsedMesh,meshType,meshCollection,materialDict,armatureObj,hiddenCollectionSet,meshOffsetDict,importAllLODs = False,createCollections = True,importShadowMeshes = False,rotate90 = True,mergeGroups = False,importBoundingBoxes = False,gameName = "",importBlendShapes = False):
 	
 	if meshType == "Main Mesh":
 		shortName = "Main"
@@ -478,6 +762,20 @@ def importLODGroup(parsedMesh,meshType,meshCollection,materialDict,armatureObj,h
 		if createCollections and importAllLODs:
 			lodCollection = getCollection(f"{meshType} LOD{str(lodIndex)}{shadowLODString} - {meshCollection.name}",meshCollection,makeNew = True)
 			lodCollection["LOD Distance"] = lod.lodDistance
+			if gameName == "MHWILDS":
+				profileValues = getattr(
+					parsedMesh,
+					"mhwildsCanonicalTableProfile",
+					None,
+				)
+				profile = (
+					[] if profileValues is None else list(profileValues)
+				)
+				lodCollection["MHWILDS Use Canonical Tables"] = (
+					bool(profile[lodIndex])
+					if lodIndex < len(profile)
+					else True
+				)
 		else:
 			lodCollection = meshCollection
 		if not firstLOD and createCollections:
@@ -523,7 +821,12 @@ def importLODGroup(parsedMesh,meshType,meshCollection,materialDict,armatureObj,h
 						armature=armatureObj,
 						collection=lodCollection,
 						rotate90 = rotate90,
-						blendShapeList = subMesh.blendShapeList
+						blendShapeList = subMesh.blendShapeList,
+						importBlendShapes = importBlendShapes,
+						normalGroupList = subMesh.normalGroupList,
+						normalPivotGroupList = subMesh.normalPivotGroupList,
+						normalPivot0List = subMesh.normalPivot0List,
+						normalPivot255List = subMesh.normalPivot255List,
 						)
 					if parsedMesh.isMPLY:
 						meshObj.parent = MPLYRoot
@@ -667,7 +970,11 @@ def importREMeshFile(filePath,options):
 	meshFileName = os.path.splitext(os.path.split(filePath)[1])[0]
 	meshParseStartTime = time.time()
 	parsedMesh = ParsedREMesh()
-	parsedMesh.ParseREMesh(reMesh)
+	importBlendShapes = (
+		_game_supports_blend_shapes(gameName)
+		and bool(options.get("importBlendShapes", True))
+	)
+	parsedMesh.ParseREMesh(reMesh, {"importBlendShapes": importBlendShapes})
 	print("Parsed mesh.")
 	meshParseEndTime = time.time()
 	meshParseTime = meshParseEndTime - meshParseStartTime
@@ -725,7 +1032,23 @@ def importREMeshFile(filePath,options):
 	
 	if not options["importArmatureOnly"]:
 		#print("DEBUG: Importing main mesh")
-		importLODGroup(parsedMesh,"Main Mesh",meshCollection,materialDict,armatureObj,hiddenCollectionSet,meshOffsetDict,options["importAllLODs"],options["createCollections"],options["importShadowMeshes"],options["rotate90"],options["mergeGroups"],options["importBoundingBoxes"])
+		importLODGroup(
+			parsedMesh,
+			"Main Mesh",
+			meshCollection,
+			materialDict,
+			armatureObj,
+			hiddenCollectionSet,
+			meshOffsetDict,
+			options["importAllLODs"],
+			options["createCollections"],
+			options["importShadowMeshes"],
+			options["rotate90"],
+			options["mergeGroups"],
+			options["importBoundingBoxes"],
+			gameName,
+			importBlendShapes,
+		)
 		#print("DEBUG: Finished importing main mesh")
 	"""
 	if options["importShadowMeshes"] and parsedMesh.shadowMeshLODList != []:
@@ -981,8 +1304,9 @@ def exportREMeshFile(filePath,options):
 		import hashlib
 		import tempfile
 		import zlib
-		from .sf6_hybrid import build_hybrid_mesh
-		from .sf6_source import SOURCE
+		from .sf6_hybrid import build_hybrid_mesh, _scene_objects
+		from .sf6_evaluated import evaluated_hybrid_collection
+		from .sf6_source import SOURCE, SourceMesh
 		options.pop('_sf6HybridReport', None)
 		if not options.get('exportBlendShapes', True):
 			raise ValueError('SF6 Hybrid Shape Export requires Preserve Source Data to be enabled.')
@@ -1007,23 +1331,46 @@ def exportREMeshFile(filePath,options):
 			raise ValueError('Embedded SF6 source could not be decoded.') from error
 		if hashlib.sha256(source_bytes).hexdigest() != sourceCollection.get('SF6SourceSHA256'):
 			raise ValueError('Embedded SF6 source hash mismatch')
+		# Reject stale part identities before allocating/evaluating private meshes.
+		from .sf6_hybrid import _parts_by_key
+		original_source = SourceMesh(source_bytes)
+		_scene_objects(sourceCollection, original_source,
+					   sourceCollection['SF6SourceSHA256'],
+					   _parts_by_key(original_source),
+					   None if selected_objects is None else set(selected_objects))
 		output_dir = os.path.dirname(os.path.abspath(filePath))
 		if not os.path.isdir(output_dir):
 			raise ValueError('Choose an existing output directory for SF6 hybrid export.')
 		staged_dir = tempfile.mkdtemp(prefix='.sf6-hybrid-', dir=output_dir)
 		ordinary_path = os.path.join(staged_dir, 'ordinary.mesh.230110883')
 		staged_output = os.path.join(staged_dir, 'hybrid.mesh.230110883')
+		marker_names = ('REMeshLastExportedCollection', 'REMeshLastExportedMeshVersion')
+		previous_markers = {name: bpy.context.scene.get(name) for name in marker_names}
+		export_succeeded = False
 		try:
 			ordinary_options = dict(options, sf6HybridPreserve=False,
 									exportBlendShapes=False, exportAllLODs=False,
-									selectedOnly=bool(options.get('selectedOnly')))
+									selectedOnly=False, splitLoopVertices=False,
+									preserveSharpEdges=False, autoSolveRepeatedUVs=False,
+									_sf6EvaluatedSnapshot=True)
+			# Geometry and corrective keys use one private evaluated Basis.
+			# The snapshot contains only the requested LOD0 parts. Corner
+			# Any UV/sharp splitting happens inside that shared snapshot.
+			if options.get('splitLoopVertices', True):
+				print('SF6 hybrid export uses shared evaluated rows; ordinary corner splitting is disabled.')
 			ordinary_options.pop('_sf6HybridReport', None)
-			if not exportREMeshFile(ordinary_path, ordinary_options):
-				raise ValueError('Ordinary LOD0 rebuild failed; the destination was not changed.')
-			with open(ordinary_path, 'rb') as ordinary_file:
-				ordinary_bytes = ordinary_file.read()
-			hybrid_bytes, report = build_hybrid_mesh(
-				source_bytes, ordinary_bytes, sourceCollection, selected_objects=selected_objects)
+			with evaluated_hybrid_collection(sourceCollection, selected_objects,
+					preserve_sharp_edges=bool(options.get('preserveSharpEdges', False))) as (
+					evaluated_collection, evaluated_selected, evaluation_report):
+				ordinary_options['targetCollection'] = evaluated_collection.name
+				if not exportREMeshFile(ordinary_path, ordinary_options):
+					raise ValueError('Ordinary LOD0 rebuild failed; the destination was not changed.')
+				with open(ordinary_path, 'rb') as ordinary_file:
+					ordinary_bytes = ordinary_file.read()
+				hybrid_bytes, report = build_hybrid_mesh(
+					source_bytes, ordinary_bytes, evaluated_collection,
+					selected_objects=evaluated_selected)
+				report['evaluated_geometry'] = evaluation_report
 			if not isinstance(hybrid_bytes, bytes) or not hybrid_bytes.startswith(b'MESH'):
 				raise ValueError('SF6 hybrid builder returned an invalid mesh.')
 			with open(staged_output, 'wb') as hybrid_file:
@@ -1031,9 +1378,20 @@ def exportREMeshFile(filePath,options):
 				hybrid_file.flush()
 				os.fsync(hybrid_file.fileno())
 			os.replace(staged_output, filePath)
+			# The ordinary staging export records the temporary collection.
+			# Keep the UI's last-export marker attached to the real collection.
+			bpy.context.scene['REMeshLastExportedCollection'] = sourceCollection.name
 			options['_sf6HybridReport'] = report
+			export_succeeded = True
 			return True
 		finally:
+			if not export_succeeded:
+				for name, value in previous_markers.items():
+					if value is None:
+						if name in bpy.context.scene:
+							del bpy.context.scene[name]
+					else:
+						bpy.context.scene[name] = value
 			for temporary_path in (ordinary_path, staged_output):
 				try:
 					os.unlink(temporary_path)
@@ -1108,13 +1466,23 @@ def exportREMeshFile(filePath,options):
 	maxWeightsPerVertex = 8
 	maxWeightsPerVertexExtended = 16
 	maxWeightedBones = 256
-	SIX_WEIGHT_GAMES = set(["SF6","MHWILDS","PRAG"])
-	EXTENDED_WEIGHT_GAMES = set(["MHWILDS","PRAG","MHS3",])#Games with support for extended weight buffers
+	SIX_WEIGHT_GAMES = set(["SF6","MHWILDS","PRAG","MHS3","ONIWOTS"])
+	EXTENDED_WEIGHT_GAMES = set(["MHWILDS","PRAG","MHS3","ONIWOTS",])#Games with support for extended weight buffers
 	if gameName in SIX_WEIGHT_GAMES:
 		maxWeightsPerVertex = 6
 		maxWeightsPerVertexExtended = 12
 		maxWeightedBones = 1024
-	padWithLastWeightIndex = True if gameName == "PRAG" or gameName == "MHS3" or gameName == "RE9" else False
+	padWithLastWeightIndex = True if gameName == "PRAG" or gameName == "MHS3" or gameName == "ONIWOTS" or gameName == "RE9" else False
+	errorInfoDict["ExtendedMaxWeightsPerVertexExceeded"] = f"""Extended Max Weights Per Vertex Exceeded On Sub Mesh
+A vertex has more the maximum of {maxWeightsPerVertexExtended} weights assigned to it.
+
+HOW TO FIX:
+_______________
+Limit total weights to {maxWeightsPerVertexExtended} in weight paint mode and normalize all weights from the Weights menu.
+
+OR
+Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
+"""
 	MAX_VERTICES = 65536
 	MAX_VERTICES_EXTENDED = 4294967295
 	MAX_FACES = 4294967295
@@ -1140,6 +1508,18 @@ def exportREMeshFile(filePath,options):
 	parsedMesh = ParsedREMesh()
 	parsedMesh.boundingBox = None
 	parsedMesh.boundingSphere = None
+	blendShapeExportEnabled = (
+		_game_supports_blend_shapes(gameName)
+		and bool(options.get("exportBlendShapes", False))
+	)
+	if gameName == "MHWILDS":
+		from .mhwilds_blendshape import set_export_mode
+		selectedBlendShapeMode = int(options.get("blendShapeExportMode", 0))
+		set_export_mode(parsedMesh, selectedBlendShapeMode)
+		print(
+			f"Blendshape export mode: {selectedBlendShapeMode}; "
+			f"exportShapeKeys={blendShapeExportEnabled}"
+		)
 	newMeshDataList = []
 	vertexGroupsSet = set()
 	weightedBonesSet = set()
@@ -1336,6 +1716,47 @@ def exportREMeshFile(filePath,options):
 	meshLODCollectionList.sort(key=lambda col: col.name)
 	if not options["exportAllLODs"]:
 		meshLODCollectionList = [meshLODCollectionList[0]]
+	if gameName == "MHWILDS":
+		parsedMesh.mhwildsCanonicalTableProfile = [
+			bool(collection.get("MHWILDS Use Canonical Tables", True))
+			for collection in meshLODCollectionList
+		]
+		sharedLODMap = {}
+		collectionObjectSets = []
+		for collection in meshLODCollectionList:
+			objects = frozenset(
+				obj
+				for obj in collection.objects
+				if (
+					obj.type == "MESH"
+					and not obj.get("MeshExportExclude")
+					and (
+						not options["selectedOnly"]
+						or obj in bpy.context.selected_objects
+					)
+				)
+			)
+			collectionObjectSets.append(objects)
+		for targetIndex, targetObjects in enumerate(collectionObjectSets):
+			if targetIndex == len(collectionObjectSets) - 1:
+				continue
+			targetDistance = meshLODCollectionList[targetIndex].get(
+				"LOD Distance"
+			)
+			for sourceIndex in range(targetIndex):
+				sourceDistance = meshLODCollectionList[sourceIndex].get(
+					"LOD Distance"
+				)
+				if (
+					targetObjects
+					and targetObjects == collectionObjectSets[sourceIndex]
+					and targetDistance is not None
+					and sourceDistance is not None
+					and float(targetDistance) == float(sourceDistance)
+				):
+					sharedLODMap[targetIndex] = sourceIndex
+					break
+		parsedMesh._blendShapeSharedLODMap = sharedLODMap
 	#Loop through all lod collections, or the scene collection if there is no collections
 	meshDataStartTime = time.time()
 	isFirstLOD = True
@@ -1368,11 +1789,48 @@ def exportREMeshFile(filePath,options):
 				#Get copy of sub mesh with modifiers applied
 				#Creates copy of object so that solve repeated uvs and sharp edge splitting can be done and not affect the original mesh
 				cloneObj.name ="CLN_" + obj.name
-				cloneObj.data = bpy.data.meshes.new_from_object(obj.evaluated_get(dg))
+				# Wilds blendshape export needs an undeformed Basis clone. Other games
+				# retain the original RE Mesh Editor evaluated-clone behavior exactly.
+				if options.get('_sf6EvaluatedSnapshot', False):
+					# Hybrid's private Basis already contains the final evaluated
+					# rows, normals and cleanup. Evaluating it again can perturb
+					# packed tangents through normal rounding at byte boundaries.
+					cloneObj.data = obj.data.copy()
+					cloneObj.data.use_fake_user = False
+				elif _game_supports_blend_shapes(gameName):
+					storedShapeValues = _temporarily_zero_shape_key_values(obj)
+					try:
+						obj.data.update()
+						bpy.context.view_layer.update()
+						cloneObj.data = bpy.data.meshes.new_from_object(
+							obj.evaluated_get(dg)
+						)
+					finally:
+						_restore_shape_key_values(storedShapeValues)
+						obj.data.update()
+						bpy.context.view_layer.update()
+				else:
+					cloneObj.data = bpy.data.meshes.new_from_object(
+						obj.evaluated_get(dg)
+					)
 				clonedMeshCollection = getCollection("clonedMeshes")
 				clonedMeshCollection.objects.link(cloneObj)
 				
 				print(f"Created temporary clone of {obj.name}: {cloneObj.name}")
+				if options.get("limitTotal", False):
+					limitTotalCount = max(1, min(32, int(options.get("limitTotalCount", maxWeightsPerVertexExtended))))
+					try:
+						allowedGroupNames = None
+						if armatureObj is not None:
+							allowedGroupNames = set(armatureObj.data.bones.keys())
+							if gameName == "DD2":
+								allowedGroupNames.update("SHAPEKEY_" + name for name in armatureObj.data.bones.keys())
+						limitTotalWeights(cloneObj, limitTotalCount,
+							separateShapeKeyWeights=gameName == "DD2",
+							allowedGroupNames=allowedGroupNames)
+						print(f"Limited total weights to {limitTotalCount} on {cloneObj.name}")
+					except Exception as err:
+						raiseWarning(f"Failed to limit total weights on {obj.name}. {str(err)}")
 				cloneMeshNameDict[obj.name] = cloneObj.name
 				deleteCopiedMeshList.append(cloneObj)
 				if options["autoSolveRepeatedUVs"]:
@@ -1553,15 +2011,6 @@ def exportREMeshFile(filePath,options):
 					evaluatedSubMeshData.calc_tangents()
 				except:
 					pass
-				if len(evaluatedSubMeshData.vertices) > MAX_VERTICES_EXTENDED:
-					addErrorToDict(errorDict, "MaxVerticesExceeded", rawsubmesh.name)
-				if len(evaluatedSubMeshData.vertices) > MAX_VERTICES:
-					parsedMesh.bufferHasIntFaces = True
-					raiseWarning(f"{rawsubmesh.name} exceeded the standard limit of {str(MAX_VERTICES)} vertices. Enabling extended vertex limit of {str(MAX_VERTICES_EXTENDED)}.")
-				vertexCount += len(evaluatedSubMeshData.vertices)
-				
-				faceCount += len(evaluatedSubMeshData.polygons)
-				
 				vertexGroupIndexToRemapDict = {vgroup.index: remapDict[vgroup.name.removeprefix("SHAPEKEY_")] for vgroup in rawsubmesh.vertex_groups}
 				
 				#DD2 shape key vertex group indices
@@ -1569,180 +2018,451 @@ def exportREMeshFile(filePath,options):
 				if len(shapeKeyGroupIndices) != 0:
 					parsedMesh.bufferHasSecondaryWeight = True
 				
-				#print(vertexGroupIndexToRemapDict)
+				splitLoopVertices = options.get("splitLoopVertices", True)
+
 				parsedMesh.bufferHasPosition = True
-				parsedSubMesh.vertexPosList = np.zeros((len(evaluatedSubMeshData.vertices),3))
 				parsedMesh.bufferHasNorTan = True
-				parsedSubMesh.normalList = np.zeros((len(evaluatedSubMeshData.vertices),3))
-				parsedSubMesh.tangentList = np.zeros((len(evaluatedSubMeshData.vertices),4),dtype="<B")
-				if armatureObj != None:
-					parsedMesh.bufferHasWeight = True
-					parsedSubMesh.weightList = np.zeros((len(evaluatedSubMeshData.vertices),8))
-					parsedSubMesh.weightIndicesList = np.zeros((len(evaluatedSubMeshData.vertices),8),dtype="<H")#ushort because of SF6
-					#In case weights exceed standard maximum
-					parsedSubMesh.extraWeightList = np.zeros((len(evaluatedSubMeshData.vertices),8))
-					parsedSubMesh.extraWeightIndicesList = np.zeros((len(evaluatedSubMeshData.vertices),8),dtype="<H")#ushort because of SF6
-					if parsedMesh.bufferHasSecondaryWeight:
-						parsedSubMesh.secondaryWeightList = np.zeros((len(evaluatedSubMeshData.vertices),8))
-						parsedSubMesh.secondaryWeightIndicesList = np.zeros((len(evaluatedSubMeshData.vertices),8),dtype="<H")#ushort because of SF6
-				#Get Faces
-				parsedSubMesh.faceList = [tuple(f.vertices) for f in evaluatedSubMeshData.polygons]
-				if len(parsedSubMesh.faceList) > MAX_FACES:
-					addErrorToDict(errorDict, "MaxFacesExceeded", rawsubmesh.name)
-				if any([len(face) != 3 for face in parsedSubMesh.faceList]):
-					addErrorToDict(errorDict, "NonTriangulatedFace", rawsubmesh.name)
-				if len(evaluatedSubMeshData.uv_layers) > 0:
-					parsedSubMesh.uvList = np.zeros((len(evaluatedSubMeshData.vertices),2))
-					meshHasUV = True
+
+				meshHasUV = len(evaluatedSubMeshData.uv_layers) > 0
+				if meshHasUV:
 					parsedMesh.bufferHasUV = True
 				else:
-					meshHasUV = False
 					addErrorToDict(errorDict, "NoUVMapOnSubMesh", rawsubmesh.name)
-				if len(evaluatedSubMeshData.uv_layers) > 1:
-					meshHasUV2 = True
-					parsedSubMesh.uv2List = np.zeros((len(evaluatedSubMeshData.vertices),2))
-					parsedMesh.bufferHasUV2 = True
-				else:	
-					parsedSubMesh.uv2List = None
-					meshHasUV2 = False
-				if len(evaluatedSubMeshData.vertex_colors) > 0:
-					parsedSubMesh.colorList = np.zeros((len(evaluatedSubMeshData.vertices),4))
-					meshHasColor = True
-					parsedMesh.bufferHasColor = True
-				else:
-					meshHasColor = False
-					parsedSubMesh.colorList = None
-				
-				#Credit to RaiderB and WoefulWolf for this, I thought this way of getting vertex data was pretty efficient
-				#Get Vertex Data
-				sortedLoops = sorted(evaluatedSubMeshData.loops, key=lambda loop: loop.vertex_index)
-				previousIndex = -1
-				
-				#These are used to check if there's multiple uvs per vertex
-				#If the current vert is already in the set, throw an error
-				
-				UVPoints = dict()
-				UV2Points = dict()
-				for loop in sortedLoops:
-					currentVertIndex = loop.vertex_index
-					#Vertex UV
-					if meshHasUV:
-						uv = evaluatedSubMeshData.uv_layers[0].data[loop.index].uv
-						parsedSubMesh.uvList[currentVertIndex] = uv
-						
-						if currentVertIndex in UVPoints and UVPoints[currentVertIndex] != uv:
-							addErrorToDict(errorDict, "MultipleUVsAssignedToVertex", rawsubmesh.name)
-							#print(f"ERROR: Multiple UVs per vertex on UV1 of {rawsubmesh.name}")
-							#raise Exception
-						else:
-							UVPoints[currentVertIndex] = uv
-						#else:
-							#print(f"ERROR: Multiple UVs per vertex on UV1 of {evaluatedSubMeshData.name}")
-							#raise Exception
-					if meshHasUV2:
-						uv2 = evaluatedSubMeshData.uv_layers[1].data[loop.index].uv
-						parsedSubMesh.uv2List[currentVertIndex] = uv2
-						
-						if currentVertIndex in UV2Points and UV2Points[currentVertIndex] != uv2:
-							addErrorToDict(errorDict, "MultipleUVsAssignedToVertex", rawsubmesh.name)
-							#print(f"ERROR: Multiple UVs per vertex on UV2 of {rawsubmesh.name}")
-							#raise Exception
-						else:
-							UV2Points[currentVertIndex] = uv2
-					
-					if currentVertIndex == previousIndex:#Skip looping over vertices that have already been read
-						continue
 
-					previousIndex = currentVertIndex
-					#Vertex Pos
-					vertex = evaluatedSubMeshData.vertices[currentVertIndex]
-					parsedSubMesh.vertexPosList[currentVertIndex] = vertex.co
-					
-					#Vertex Normal
-					
-					parsedSubMesh.normalList[currentVertIndex] = loop.normal
-					
-					#Vertex Tangent
-					
-					loopTangent = loop.tangent * 1.001 * 127
+				meshHasUV2 = len(evaluatedSubMeshData.uv_layers) > 1
+				if meshHasUV2:
+					parsedMesh.bufferHasUV2 = True
+
+				meshHasColor = len(evaluatedSubMeshData.vertex_colors) > 0
+				if meshHasColor:
+					parsedMesh.bufferHasColor = True
+
+				if armatureObj != None:
+					parsedMesh.bufferHasWeight = True
+
+				def _round_tuple(values, places=6):
+					return tuple(round(float(v), places) for v in values)
+
+				def _pack_loop_tangent(loop):
+					loopTangent = loop.tangent * 1.001 * 127.0
+
 					tx = int(floor(loopTangent[0])) & 0xFF
 					ty = int(floor(loopTangent[1])) & 0xFF
 					tz = int(floor(loopTangent[2])) & 0xFF
-					sign = int(floor(loop.bitangent_sign*127.0)) & 0xFF
+					sign = int(floor(loop.bitangent_sign * 127.0)) & 0xFF
 
-					parsedSubMesh.tangentList[currentVertIndex] = (tx, ty, tz, sign)
-					
-					
-					#Vertex Color	
-					if meshHasColor:
-						parsedSubMesh.colorList[currentVertIndex] = evaluatedSubMeshData.vertex_colors[0].data[loop.index].color
-						
-				
-					#Bone Weights
-					MIN_WEIGHT = 0.002#If the weight is any lower than this, the engine freaks out and puts the vert at the origin
+					return (tx, ty, tz, sign)
+
+				def _get_vertex_weights(vertex):
+					MIN_WEIGHT = 0.002
+
 					weightList = []
 					weightIndicesList = []
-					
+
+					extraWeightList = [0.0] * 8
+					extraWeightIndicesList = [0] * 8
+
 					secondaryWeightList = []
 					secondaryWeightIndicesList = []
-					
-					if parsedMesh.bufferHasWeight:
-						paddingValue = 0#Pad bone indices with last value
-						for g in vertex.groups:
-							if (g.weight >= MIN_WEIGHT or g.group in shapeKeyGroupIndices) and g.group < vertexGroupCount:
-								if g.group in shapeKeyGroupIndices:#DD2 shapekey weights
-									#print(f"Added secondary weight Vertex {currentVertIndex}")
-									secondaryWeightList.append(g.weight)
-									secondaryWeightIndicesList.append(vertexGroupIndexToRemapDict[g.group])
-									#print(f"Added secondary weight: Vert {currentVertIndex}, {parsedMesh.skeleton.weightedBones[vertexGroupIndexToRemapDict[g.group]]}")
-									#Gather vertex positions of bone weights to generate bone bounding box
-									boneVertDict[parsedMesh.skeleton.weightedBones[secondaryWeightIndicesList[-1]]].append(vertex.co)
-								else:
-									weightList.append(g.weight)
-									weightIndicesList.append(vertexGroupIndexToRemapDict[g.group])
-									if padWithLastWeightIndex:
-										paddingValue = vertexGroupIndexToRemapDict[g.group]
-									lastWeightedIndex = vertexGroupIndexToRemapDict[g.group]#For pragmata
-									#Gather vertex positions of bone weights to generate bone bounding box
-									boneVertDict[parsedMesh.skeleton.weightedBones[weightIndicesList[-1]]].append(vertex.co)
-						"""
-						weightList = [g.weight for g in vertex.groups]
-						try:
-							weightIndicesList = [vertexGroupIndexToRemapDict[g.group] for g in vertex.groups]
-						except Exception as err:
-							raiseWarning("Bone Remap Dict Error: "+str(err))
-							addErrorToDict(errorDict, "InvalidWeights", rawsubmesh.name)
-						"""
-						#print(weightIndicesList)
-						if len(weightList) > maxWeightsPerVertex:
-							parsedMesh.bufferHasExtraWeight = True
-							if gameName not in EXTENDED_WEIGHT_GAMES:#Limit extra vertex weights to MH Wilds for now since I haven't tested which games extra weights can work on.
-								addErrorToDict(errorDict, "MaxWeightsPerVertexExceeded", rawsubmesh.name)
-							
-							parsedSubMesh.extraWeightList[currentVertIndex] = list(pad(weightList[maxWeightsPerVertex:],size=8,padding=0.0))
-							parsedSubMesh.extraWeightIndicesList[currentVertIndex] = list(pad(weightIndicesList[maxWeightsPerVertex:],size=8,padding=paddingValue))
-							#print(rawsubmesh.name)
-							#print(currentVertIndex)
-							#print(parsedSubMesh.extraWeightList[currentVertIndex])
-							#print(parsedSubMesh.extraWeightIndicesList[currentVertIndex])
-							if len(weightList) > maxWeightsPerVertexExtended:
-								addErrorToDict(errorDict, "ExtendedMaxWeightsPerVertexExceeded", rawsubmesh.name)
+
+					paddingValue = 0
+
+					if not parsedMesh.bufferHasWeight:
+						return ([0.0] * 8, [0] * 8,	extraWeightList, extraWeightIndicesList, [0.0] * 8,	[0] * 8,)
+
+					for g in vertex.groups:
+						if g.group >= vertexGroupCount:
+							continue
+
+						if g.group not in vertexGroupIndexToRemapDict:
+							continue
+						if gameName == "DD2" and g.group in shapeKeyGroupIndices and g.weight <= 0:
+							continue
+
+						if g.weight < MIN_WEIGHT and g.group not in shapeKeyGroupIndices:
+							continue
+
+						remappedBoneIndex = vertexGroupIndexToRemapDict[g.group]
+
+						if g.group in shapeKeyGroupIndices:
+							secondaryWeightList.append(g.weight)
+							secondaryWeightIndicesList.append(remappedBoneIndex)
+
+							if parsedMesh.skeleton != None and remappedBoneIndex < len(parsedMesh.skeleton.weightedBones):
+								boneVertDict[parsedMesh.skeleton.weightedBones[remappedBoneIndex]].append(vertex.co)
+
 						else:
-							parsedSubMesh.extraWeightList[currentVertIndex] = [0.0]*8
-							parsedSubMesh.extraWeightIndicesList[currentVertIndex] = [0]*8
-						
-						if len(secondaryWeightList) > maxWeightsPerVertex:
-							addErrorToDict(errorDict, "MaxWeightsPerVertexExceeded", rawsubmesh.name)
-						
-						parsedSubMesh.weightList[currentVertIndex] = list(pad(weightList[:maxWeightsPerVertex],size=8,padding=0.0))
-						parsedSubMesh.weightIndicesList[currentVertIndex] = list(pad(weightIndicesList[:maxWeightsPerVertex],size=8,padding=paddingValue))
+							weightList.append(g.weight)
+							weightIndicesList.append(remappedBoneIndex)
+
+							if padWithLastWeightIndex:
+								paddingValue = remappedBoneIndex
+
+							if parsedMesh.skeleton != None and remappedBoneIndex < len(parsedMesh.skeleton.weightedBones):
+								boneVertDict[parsedMesh.skeleton.weightedBones[remappedBoneIndex]].append(vertex.co)
+
+					if len(weightList) > maxWeightsPerVertex:
+						if gameName != "DD2":
+							parsedMesh.bufferHasExtraWeight = True
+
+						if gameName not in EXTENDED_WEIGHT_GAMES:
+							weightError = "MaxPrimaryWeightsPerVertexExceeded" if gameName == "DD2" else "MaxWeightsPerVertexExceeded"
+							addErrorToDict(errorDict, weightError, rawsubmesh.name)
+
+						extraWeightList = list(
+							pad(weightList[maxWeightsPerVertex:], size=8, padding=0.0)
+						)
+
+						extraWeightIndicesList = list(
+							pad(weightIndicesList[maxWeightsPerVertex:], size=8, padding=paddingValue)
+						)
+
+						if gameName != "DD2" and len(weightList) > maxWeightsPerVertexExtended:
+							addErrorToDict(errorDict, "ExtendedMaxWeightsPerVertexExceeded", rawsubmesh.name)
+
+					if len(secondaryWeightList) > maxWeightsPerVertex:
+						weightError = "MaxSecondaryWeightsPerVertexExceeded" if gameName == "DD2" else "MaxWeightsPerVertexExceeded"
+						addErrorToDict(errorDict, weightError, rawsubmesh.name)
+
+					weightList8 = list(
+						pad(weightList[:maxWeightsPerVertex], size=8, padding=0.0)
+					)
+
+					weightIndicesList8 = list(
+						pad(weightIndicesList[:maxWeightsPerVertex], size=8, padding=paddingValue)
+					)
+
+					secondaryWeightList8 = list(
+						pad(secondaryWeightList[:maxWeightsPerVertex], size=8, padding=0.0)
+					)
+
+					secondaryWeightIndicesList8 = list(
+						pad(secondaryWeightIndicesList[:maxWeightsPerVertex], size=8, padding=0)
+					)
+
+					return (weightList8, weightIndicesList8, extraWeightList, extraWeightIndicesList, secondaryWeightList8,	secondaryWeightIndicesList8,)
+
+				if splitLoopVertices:
+					exportVertexMap = {}
+
+					outPositions = []
+					outNormals = []
+					outTangents = []
+					outUV0 = []
+					outUV1 = []
+					outColors = []
+
+					outWeights = []
+					outWeightIndices = []
+					outExtraWeights = []
+					outExtraWeightIndices = []
+					outSecondaryWeights = []
+					outSecondaryWeightIndices = []
+
+					outFaces = []
+					outSourceVertexIndices = []
+					usedOriginalVertexIndices = set()
+
+					for poly in evaluatedSubMeshData.polygons:
+						if len(poly.vertices) != 3:
+							addErrorToDict(errorDict, "NonTriangulatedFace", rawsubmesh.name)
+							continue
+
+						newFace = []
+
+						for loopIndex in poly.loop_indices:
+							loop = evaluatedSubMeshData.loops[loopIndex]
+							srcVertIndex = loop.vertex_index
+							vertex = evaluatedSubMeshData.vertices[srcVertIndex]
+
+							usedOriginalVertexIndices.add(srcVertIndex)
+
+							normal = loop.normal.copy()
+							if normal.length != 0:
+								normal.normalize()
+
+							tangentPacked = _pack_loop_tangent(loop)
+
+							uv0 = evaluatedSubMeshData.uv_layers[0].data[loopIndex].uv.copy() if meshHasUV else None
+							uv1 = evaluatedSubMeshData.uv_layers[1].data[loopIndex].uv.copy() if meshHasUV2 else None
+							color = evaluatedSubMeshData.vertex_colors[0].data[loopIndex].color if meshHasColor else None
+
+							# Splitting if the loop normal, UV, tangent, or color attrib. is different.
+							exportKey = (srcVertIndex,	_round_tuple(normal), tangentPacked, _round_tuple(uv0) if uv0 is not None else None, _round_tuple(uv1) if uv1 is not None else None, _round_tuple(color) if color is not None else None,)
+
+							if exportKey not in exportVertexMap:
+								newExportIndex = len(outPositions)
+								exportVertexMap[exportKey] = newExportIndex
+
+								outPositions.append(tuple(vertex.co))
+								outNormals.append(tuple(normal))
+								outTangents.append(tangentPacked)
+								outSourceVertexIndices.append(srcVertIndex)
+
+								if meshHasUV:
+									outUV0.append(tuple(uv0))
+
+								if meshHasUV2:
+									outUV1.append(tuple(uv1))
+
+								if meshHasColor:
+									outColors.append(tuple(color))
+
+								if parsedMesh.bufferHasWeight:
+									(
+										weightList8,
+										weightIndicesList8,
+										extraWeightList8,
+										extraWeightIndicesList8,
+										secondaryWeightList8,
+										secondaryWeightIndicesList8,
+									) = _get_vertex_weights(vertex)
+
+									outWeights.append(weightList8)
+									outWeightIndices.append(weightIndicesList8)
+									outExtraWeights.append(extraWeightList8)
+									outExtraWeightIndices.append(extraWeightIndicesList8)
+
+									if parsedMesh.bufferHasSecondaryWeight:
+										outSecondaryWeights.append(secondaryWeightList8)
+										outSecondaryWeightIndices.append(secondaryWeightIndicesList8)
+
+							newFace.append(exportVertexMap[exportKey])
+
+						outFaces.append(tuple(newFace))
+
+					parsedSubMesh.vertexPosList = np.asarray(outPositions, dtype=np.float32)
+					parsedSubMesh.normalList = np.asarray(outNormals, dtype=np.float32)
+					parsedSubMesh.tangentList = np.asarray(outTangents, dtype="<B")
+					parsedSubMesh.faceList = outFaces
+
+					if meshHasUV:
+						parsedSubMesh.uvList = np.asarray(outUV0, dtype=np.float32)
+					else:
+						parsedSubMesh.uvList = []
+
+					if meshHasUV2:
+						parsedSubMesh.uv2List = np.asarray(outUV1, dtype=np.float32)
+					else:
+						parsedSubMesh.uv2List = None
+
+					if meshHasColor:
+						parsedSubMesh.colorList = np.asarray(outColors, dtype=np.float32)
+					else:
+						parsedSubMesh.colorList = None
+
+					if parsedMesh.bufferHasWeight:
+						parsedSubMesh.weightList = np.asarray(outWeights, dtype=np.float32)
+						parsedSubMesh.weightIndicesList = np.asarray(outWeightIndices, dtype="<H")
+
+						parsedSubMesh.extraWeightList = np.asarray(outExtraWeights, dtype=np.float32)
+						parsedSubMesh.extraWeightIndicesList = np.asarray(outExtraWeightIndices, dtype="<H")
+
 						if parsedMesh.bufferHasSecondaryWeight:
-							parsedSubMesh.secondaryWeightList[currentVertIndex] = list(pad(secondaryWeightList,size=8,padding=0.0))
-							parsedSubMesh.secondaryWeightIndicesList[currentVertIndex] = list(pad(secondaryWeightIndicesList,size=8,padding=0))
-					
+							parsedSubMesh.secondaryWeightList = np.asarray(outSecondaryWeights, dtype=np.float32)
+							parsedSubMesh.secondaryWeightIndicesList = np.asarray(outSecondaryWeightIndices, dtype="<H")
+
+					exportVertexCount = len(parsedSubMesh.vertexPosList)
+
+					if exportVertexCount > MAX_VERTICES_EXTENDED:
+						addErrorToDict(errorDict, "MaxVerticesExceeded", rawsubmesh.name)
+
+					if exportVertexCount > MAX_VERTICES:
+						parsedMesh.bufferHasIntFaces = True
+						raiseWarning(
+							f"{rawsubmesh.name} exceeded the standard limit of {str(MAX_VERTICES)} vertices. "
+							f"Enabling extended vertex limit of {str(MAX_VERTICES_EXTENDED)}."
+						)
+
+					if len(parsedSubMesh.faceList) > MAX_FACES:
+						addErrorToDict(errorDict, "MaxFacesExceeded", rawsubmesh.name)
+
+					if len(usedOriginalVertexIndices) != len(evaluatedSubMeshData.vertices):
+						addErrorToDict(errorDict, "LooseVerticesOnSubMesh", rawsubmesh.name)
+
+					vertexCount += exportVertexCount
+					faceCount += len(parsedSubMesh.faceList)
+
+					print(
+						f"Export vertex remap on {rawsubmesh.name}: "
+						f"{len(evaluatedSubMeshData.vertices)} Original vertices -> "
+						f"{exportVertexCount} exported vertices"
+					)
+
+				else:
+					# Condition branch for 'legacy' handling. 1:1 vertex export from Blender.
+					legacyVertexCount = len(evaluatedSubMeshData.vertices)
+					outSourceVertexIndices = list(range(legacyVertexCount))
+
+					parsedSubMesh.vertexPosList = np.zeros((legacyVertexCount, 3), dtype=np.float32)
+					parsedSubMesh.normalList = np.zeros((legacyVertexCount, 3), dtype=np.float32)
+					parsedSubMesh.tangentList = np.zeros((legacyVertexCount, 4), dtype="<B")
+
+					if parsedMesh.bufferHasWeight:
+						parsedSubMesh.weightList = np.zeros((legacyVertexCount, 8), dtype=np.float32)
+						parsedSubMesh.weightIndicesList = np.zeros((legacyVertexCount, 8), dtype="<H")
+						parsedSubMesh.extraWeightList = np.zeros((legacyVertexCount, 8), dtype=np.float32)
+						parsedSubMesh.extraWeightIndicesList = np.zeros((legacyVertexCount, 8), dtype="<H")
+
+						if parsedMesh.bufferHasSecondaryWeight:
+							parsedSubMesh.secondaryWeightList = np.zeros((legacyVertexCount, 8), dtype=np.float32)
+							parsedSubMesh.secondaryWeightIndicesList = np.zeros((legacyVertexCount, 8), dtype="<H")
+
+					parsedSubMesh.faceList = [tuple(f.vertices) for f in evaluatedSubMeshData.polygons]
+
+					if len(parsedSubMesh.faceList) > MAX_FACES:
+						addErrorToDict(errorDict, "MaxFacesExceeded", rawsubmesh.name)
+
+					if any([len(face) != 3 for face in parsedSubMesh.faceList]):
+						addErrorToDict(errorDict, "NonTriangulatedFace", rawsubmesh.name)
+
+					if meshHasUV:
+						parsedSubMesh.uvList = np.zeros((legacyVertexCount, 2), dtype=np.float32)
+					else:
+						parsedSubMesh.uvList = []
+
+					if meshHasUV2:
+						parsedSubMesh.uv2List = np.zeros((legacyVertexCount, 2), dtype=np.float32)
+					else:
+						parsedSubMesh.uv2List = None
+
+					if meshHasColor:
+						parsedSubMesh.colorList = np.zeros((legacyVertexCount, 4), dtype=np.float32)
+					else:
+						parsedSubMesh.colorList = None
+
+					sortedLoops = sorted(evaluatedSubMeshData.loops, key=lambda loop: loop.vertex_index)
+					previousIndex = -1
+					UVPoints = dict()
+					UV2Points = dict()
+					usedOriginalVertexIndices = set()
+
+					for loop in sortedLoops:
+						currentVertIndex = loop.vertex_index
+						usedOriginalVertexIndices.add(currentVertIndex)
+
+						if meshHasUV:
+							uv = evaluatedSubMeshData.uv_layers[0].data[loop.index].uv
+							parsedSubMesh.uvList[currentVertIndex] = uv
+
+							if currentVertIndex in UVPoints and UVPoints[currentVertIndex] != uv:
+								addErrorToDict(errorDict, "MultipleUVsAssignedToVertex", rawsubmesh.name)
+							else:
+								UVPoints[currentVertIndex] = uv
+
+						if meshHasUV2:
+							uv2 = evaluatedSubMeshData.uv_layers[1].data[loop.index].uv
+							parsedSubMesh.uv2List[currentVertIndex] = uv2
+
+							if currentVertIndex in UV2Points and UV2Points[currentVertIndex] != uv2:
+								addErrorToDict(errorDict, "MultipleUVsAssignedToVertex", rawsubmesh.name)
+							else:
+								UV2Points[currentVertIndex] = uv2
+
+						if currentVertIndex == previousIndex:
+							continue
+
+						previousIndex = currentVertIndex
+						vertex = evaluatedSubMeshData.vertices[currentVertIndex]
+
+						parsedSubMesh.vertexPosList[currentVertIndex] = vertex.co
+						parsedSubMesh.normalList[currentVertIndex] = loop.normal
+						parsedSubMesh.tangentList[currentVertIndex] = _pack_loop_tangent(loop)
+
+						if meshHasColor:
+							parsedSubMesh.colorList[currentVertIndex] = evaluatedSubMeshData.vertex_colors[0].data[loop.index].color
+
+						if parsedMesh.bufferHasWeight:
+							(
+								weightList8,
+								weightIndicesList8,
+								extraWeightList8,
+								extraWeightIndicesList8,
+								secondaryWeightList8,
+								secondaryWeightIndicesList8,
+							) = _get_vertex_weights(vertex)
+
+							parsedSubMesh.weightList[currentVertIndex] = weightList8
+							parsedSubMesh.weightIndicesList[currentVertIndex] = weightIndicesList8
+							parsedSubMesh.extraWeightList[currentVertIndex] = extraWeightList8
+							parsedSubMesh.extraWeightIndicesList[currentVertIndex] = extraWeightIndicesList8
+
+							if parsedMesh.bufferHasSecondaryWeight:
+								parsedSubMesh.secondaryWeightList[currentVertIndex] = secondaryWeightList8
+								parsedSubMesh.secondaryWeightIndicesList[currentVertIndex] = secondaryWeightIndicesList8
+
+					if legacyVertexCount > MAX_VERTICES_EXTENDED:
+						addErrorToDict(errorDict, "MaxVerticesExceeded", rawsubmesh.name)
+
+					if legacyVertexCount > MAX_VERTICES:
+						parsedMesh.bufferHasIntFaces = True
+						raiseWarning(
+							f"{rawsubmesh.name} exceeded the standard limit of {str(MAX_VERTICES)} vertices. "
+							f"Enabling extended vertex limit of {str(MAX_VERTICES_EXTENDED)}."
+						)
+
+					if len(usedOriginalVertexIndices) != legacyVertexCount:
+						addErrorToDict(errorDict, "LooseVerticesOnSubMesh", rawsubmesh.name)
+
+					vertexCount += legacyVertexCount
+					faceCount += len(parsedSubMesh.faceList)
+
+					print(
+						f"Legacy vertex export on {rawsubmesh.name}: "
+						f"{legacyVertexCount} exported vertices"
+					)
+
+				# Preserve generic source-row provenance from the CURRENT evaluated
+				# Blender mesh. Game-specific blendshape handlers may use this to
+				# recognize rows created by loop/attribute splitting.
+				parsedSubMesh.blendShapeSourceVertexIndexList = [
+					int(value) for value in outSourceVertexIndices
+				]
+				parsedSubMesh.blendShapeSourceVertexCount = int(
+					len(evaluatedSubMeshData.vertices)
+				)
+				parsedSubMesh.blendShapeSplitLoopVertices = bool(splitLoopVertices)
+
+				parsedSubMesh.blendShapeList = (
+					_build_blend_shape_entries_for_export(
+						rawsubmesh,
+						outSourceVertexIndices,
+						subMeshWorldMatrix,
+						gameName,
+						evaluatedSubMeshData,
+						exportShapeKeys=blendShapeExportEnabled,
+					)
+				)
+				if gameName == "MHWILDS":
+					parsedSubMesh.normalGroupList = (
+						_mhwilds_read_point_int_attribute(
+							evaluatedSubMeshData,
+							MHWILDS_NORMAL_GROUP_ATTRIBUTE,
+							outSourceVertexIndices,
+						)
+					)
+					parsedSubMesh.normalPivotGroupList = (
+						_mhwilds_read_point_int_attribute(
+							evaluatedSubMeshData,
+							MHWILDS_NORMAL_PIVOT_ATTRIBUTE,
+							outSourceVertexIndices,
+						)
+					)
+					parsedSubMesh.normalPivot0List = (
+						_mhwilds_read_point_int_attribute(
+							evaluatedSubMeshData,
+							MHWILDS_NORMAL_PIVOT0_ATTRIBUTE,
+							outSourceVertexIndices,
+						)
+					)
+					parsedSubMesh.normalPivot255List = (
+						_mhwilds_read_point_int_attribute(
+							evaluatedSubMeshData,
+							MHWILDS_NORMAL_PIVOT255_ATTRIBUTE,
+							outSourceVertexIndices,
+						)
+					)
 				visconGroup.subMeshList.append(parsedSubMesh)
-				if any([vertIndex not in UVPoints for vertIndex in range(len(evaluatedSubMeshData.vertices))]):
-					addErrorToDict(errorDict, "LooseVerticesOnSubMesh", rawsubmesh.name)  
 				
 				#End submesh
 			parsedLODLevel.visconGroupList.append(visconGroup)
@@ -1891,7 +2611,7 @@ def exportREMeshFile(filePath,options):
 		
 	
 	meshWriteStartTime = time.time()
-	reMesh = ParsedREMeshToREMesh(parsedMesh, meshVersion)
+	reMesh = ParsedREMeshToREMesh(parsedMesh, meshVersion, normalizeWeights=options.get("normalizeWeights", True))
 	if targetCollection != None:
 		reMesh.fileHeader.lodGroupNameHash = int(targetCollection.get("LODGroupNameHash","0"))
 	writeREMesh(reMesh, filePath)

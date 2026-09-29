@@ -9,6 +9,9 @@ from . import sf6_mod_folder as package
 from .sf6_hybrid_report import report_hybrid_export
 
 
+SCENE_DEFAULTS_PENDING = '_SF6ModFolderDefaultsPending'
+
+
 def settings_path():
     return Path(bpy.utils.user_resource('CONFIG')) / 're_mesh_editor' / 'sf6_mod_folder_export.json'
 
@@ -57,7 +60,16 @@ def existing_mod_defaults(collection, context):
 
 
 def load_operator_defaults(context, collection):
-    values = package.load_defaults(settings_path())
+    values = {}
+    if context.scene.get(SCENE_DEFAULTS_PENDING):
+        try:
+            values = json.loads(context.scene.get('SF6ModFolderDefaults', '{}'))
+        except (ValueError, TypeError):
+            pass
+    if not isinstance(values, dict):
+        values = {}
+    if not values:
+        values = package.load_defaults(settings_path())
     if not values:
         try:
             values = json.loads(context.scene.get('SF6ModFolderDefaults', '{}'))
@@ -68,6 +80,19 @@ def load_operator_defaults(context, collection):
     if not values:
         values = existing_mod_defaults(collection, context)
     return package.filter_defaults(values)
+
+
+def remember_operator_defaults(operator, context, values):
+    """Keep dialog choices independently of whether the mod export succeeds."""
+    context.scene['SF6ModFolderDefaults'] = json.dumps(values)
+    try:
+        package.save_defaults(settings_path(), values)
+    except OSError as error:
+        context.scene[SCENE_DEFAULTS_PENDING] = True
+        operator.report({'WARNING'}, 'Mod options could not be saved: ' + str(error))
+    else:
+        if SCENE_DEFAULTS_PENDING in context.scene:
+            del context.scene[SCENE_DEFAULTS_PENDING]
 
 
 def update_destination_notice(self, context):
@@ -182,18 +207,26 @@ class ExportSF6ModFolder(bpy.types.Operator):
     destination_notice: StringProperty(options={'HIDDEN', 'SKIP_SAVE'})
     exportBlendShapes: BoolProperty(name='SF6 Preserve Source Data', default=True,
         description='Mod folder export only; remembered independently of the batch exporter')
+    selectedOnly: BoolProperty(name='Selected Objects Only', default=False,
+        description='Export only selected mesh objects in the chosen mesh collection')
     sf6HybridPreserve: BoolProperty(name='SF6 Hybrid Shape Export (LOD0)', default=False,
-        description='Rebuild LOD0 geometry/rig and keep unchanged source shape deltas on verified vertices; unmatched parts and vertices have zero deltas and lower LODs are lost')
+        description='Rebuild LOD0 geometry/rig, evaluate stable modifiers on the Basis and corrective keys, and retain compatible source shapes. Requires embedded SF6 source; lower LODs are lost')
     rotate90: BoolProperty(name='Convert Z Up to Y Up', default=True)
 
     def invoke(self, context, event):
-        collection = bpy.data.collections.get(self.targetCollection) or choose_collection(context)
+        requested_collection = bpy.data.collections.get(self.targetCollection)
+        collection = requested_collection or choose_collection(context)
         values = load_operator_defaults(context, collection)
+        if requested_collection is None:
+            collection = bpy.data.collections.get(values.get('targetCollection', '')) or collection
         for key, value in values.items():
-            setattr(self, key, value)
+            if key not in ('targetCollection', 'rotate90'):
+                setattr(self, key, value)
         if collection:
             self.targetCollection = collection.name
             update_collection(self, context)
+            if values.get('targetCollection') == collection.name and 'rotate90' in values:
+                self.rotate90 = values['rotate90']
             try:
                 asset = package.asset_from_collection(collection)
                 suggested = f'{asset.character_name} C{int(asset.costume)} Mod'
@@ -243,6 +276,7 @@ class ExportSF6ModFolder(bpy.types.Operator):
                 grouping.prop(self, 'parent_destination')
         if self.export_content == 'MESH':
             layout.separator()
+            layout.prop(self, 'selectedOnly')
             layout.prop(self, 'exportBlendShapes')
             row = layout.row()
             row.enabled = self.exportBlendShapes and collection is not None and bool(collection.get('SF6PreserveSource'))
@@ -256,6 +290,17 @@ class ExportSF6ModFolder(bpy.types.Operator):
         from .blender_re_mesh import exportREMeshFile
         collection = bpy.data.collections.get(self.targetCollection)
         mesh_export = self.export_content == 'MESH'
+        values = {key: getattr(self, key) for key in package.DEFAULT_FIELDS}
+        if not mesh_export:
+            previous = load_operator_defaults(context, collection)
+            values['exportBlendShapes'] = previous.get('exportBlendShapes', True)
+            values['selectedOnly'] = previous.get('selectedOnly', False)
+            values['sf6HybridPreserve'] = previous.get('sf6HybridPreserve', False)
+            values['targetCollection'] = previous.get('targetCollection', self.targetCollection)
+            values['rotate90'] = previous.get('rotate90', self.rotate90)
+        # A rejected export should reopen with the entered fields, even when
+        # the path or folder name is invalid and needs correction.
+        remember_operator_defaults(self, context, values)
         if mesh_export and collection is None:
             self.report({'ERROR'}, 'Select the mesh collection to export.')
             return {'CANCELLED'}
@@ -269,12 +314,18 @@ class ExportSF6ModFolder(bpy.types.Operator):
             parent = bpy.path.abspath(self.parent_directory)
             preview = bpy.path.abspath(self.preview_path) if self.preview_path else ''
             preferences = context.preferences.addons[__package__.split('.')[0]].preferences
-            options = dict(targetCollection=collection.name if collection else '', selectedOnly=False,
+            options = dict(targetCollection=collection.name if collection else '', selectedOnly=self.selectedOnly,
                            exportBlendShapes=self.exportBlendShapes, sf6HybridPreserve=self.sf6HybridPreserve,
                            rotate90=self.rotate90)
             for name in ('exportAllLODs', 'autoSolveRepeatedUVs', 'preserveSharpEdges',
                          'useBlenderMaterialName', 'preserveBoneMatrices', 'exportBoundingBoxes'):
                 options[name] = getattr(preferences, 'default_' + name)
+            # Generated modifier vertices can inherit more than SF6's six
+            # bone influences. Honor the same explicit weight-cleanup defaults
+            # as direct export, without silently trimming the user's weights.
+            options.update(limitTotal=getattr(preferences, 'default_limitTotal', False),
+                           limitTotalCount=6,
+                           normalizeWeights=getattr(preferences, 'default_normalizeWeights', True))
             category = self.mod_category or (asset.category if asset else '')
             categories = package.categories_from_text(category) + package.categories_from_text(self.extra_categories)
             metadata = dict(name=self.mod_name, version=self.mod_version, author=self.mod_author,
@@ -299,17 +350,10 @@ class ExportSF6ModFolder(bpy.types.Operator):
         mod_root = Path(parent).resolve() / self.folder_name
         if mesh_export:
             context.scene.re_mdf_toolpanel.modDirectory = str(mod_root / 'natives' / 'stm')
-        values = {key: getattr(self, key) for key in package.DEFAULT_FIELDS}
-        if not mesh_export:
-            values['exportBlendShapes'] = load_operator_defaults(context, collection).get('exportBlendShapes', True)
         values.update(parent_directory=str(Path(parent).resolve()),
                       preview_path=str(Path(preview).resolve()) if preview else '',
                       mod_category=category, last_character=asset.character if asset else self.last_character)
-        context.scene['SF6ModFolderDefaults'] = json.dumps(values)
-        try:
-            package.save_defaults(settings_path(), values)
-        except OSError as error:
-            self.report({'WARNING'}, 'Mod exported; defaults could not be saved: ' + str(error))
+        remember_operator_defaults(self, context, values)
         self.report({'INFO'}, 'Exported mod folder: ' + str(mod_root))
         if mesh_export and self.sf6HybridPreserve:
             report_hybrid_export(self, options.get('_sf6HybridReport'))

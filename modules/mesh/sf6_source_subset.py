@@ -36,19 +36,31 @@ def padded_indices(part):
     return (part['faces']*3+1)//2*2
 
 
-def compact_source_subset(patched, src, included_starts, all_lods=True):
+def compact_source_subset(patched, src, included_starts, all_lods=True,
+                          shape_excluded_starts=None):
     """Copy selected source parts and remap all supported dependent tables.
 
     At least one part from source LOD0 is required because lower-LOD shape
     correspondence tables are indexed by LOD0. Nonstandard layouts fail before
     the caller opens its destination rather than guessing at unknown offsets.
+    Shape-excluded parts remain in the mesh and receive zero-shape coverage
+    instead of their source corrective-shape ranges.
     """
     source = src.data
     parts = [p for p in src.parts if p['start'] in included_starts
              and (all_lods or p['lod'] == 0)]
     if not parts:
         raise ValueError('No selected source mesh objects in the requested LODs')
-    if parts == src.parts:
+    shape_excluded_starts = frozenset(shape_excluded_starts or ())
+    if shape_excluded_starts:
+        kept_by_start = {p['start']: p for p in parts}
+        if not shape_excluded_starts <= kept_by_start.keys():
+            raise ValueError('SF6 subset: shape-excluded part is not kept')
+        if not src.blend_offset or any(
+                not any(True for _ in src.part_shapes(kept_by_start[start]))
+                for start in shape_excluded_starts):
+            raise ValueError('SF6 subset: shape-excluded part has no source shapes')
+    if parts == src.parts and not shape_excluded_starts:
         return patched
     if parts[0]['lod'] != 0:
         raise ValueError('Selected source export requires a selected LOD0 mesh')
@@ -141,7 +153,8 @@ def compact_source_subset(patched, src, included_starts, all_lods=True):
     write(out, 'Q', src.lod_offset+56, old_table)
 
     _normal_tables(out, source, src, lods, original_lods, kept_lods, local_starts)
-    shape_names = _shape_tables(out, patched, src, lods, kept_lods, new_starts, vertices, delta_start)
+    shape_names = _shape_tables(out, patched, src, lods, kept_lods, new_starts,
+                                vertices, delta_start, shape_excluded_starts)
     _name_table(out, source, src, shape_names)
     if not shape_names:
         write(out, 'Q', 64, 0)
@@ -215,7 +228,8 @@ def _normal_tables(out, source, src, lods, original_lods, kept_lods, local_start
     write(out, 'Q', 56, new_header)
 
 
-def _shape_tables(out, patched, src, lods, kept_lods, new_starts, vertices, delta_start):
+def _shape_tables(out, patched, src, lods, kept_lods, new_starts, vertices,
+                  delta_start, shape_excluded_starts=frozenset()):
     source = src.data
     if not src.blend_offset:
         return []
@@ -243,6 +257,8 @@ def _shape_tables(out, patched, src, lods, kept_lods, new_starts, vertices, delt
                 if reserved:
                     raise ValueError('SF6 subset: unknown shape range flags')
                 for p in kept_lods[li]:
+                    if p['start'] in shape_excluded_starts:
+                        continue
                     lo, hi = max(start,p['start']), min(start+length,p['start']+p['count'])
                     if lo < hi:
                         slices.append((new_starts[p['start']]+lo-p['start'], offset+lo-start, hi-lo))
@@ -284,6 +300,8 @@ def _shape_tables(out, patched, src, lods, kept_lods, new_starts, vertices, delt
                 if offset or reserved:
                     raise ValueError('SF6 subset: unknown extra shape range')
                 for p in kept_lods[li]:
+                    if p['start'] in shape_excluded_starts:
+                        continue
                     lo, hi = max(start,p['start']), min(start+length,p['start']+p['count'])
                     if lo < hi:
                         ranges.append((new_starts[p['start']]+lo-p['start'], 0, hi-lo, 0))
@@ -292,6 +310,14 @@ def _shape_tables(out, patched, src, lods, kept_lods, new_starts, vertices, delt
                     raise ValueError('SF6 subset has too many extra shape ranges')
                 rp_new = append(out, b''.join(struct.pack('<IIII',*r) for r in ranges))
                 extras.append(struct.pack('<HHHBBQ',0,0,0,len(ranges),0,rp_new))
+        # A retained placeholder still needs complete coverage in the shape
+        # layout, but must not inherit any of its retail corrective shapes.
+        for p in kept_lods[li]:
+            if p['start'] in shape_excluded_starts:
+                rp_new = append(out, struct.pack('<IIII',
+                                                  new_starts[p['start']], 0,
+                                                  p['count'], 0))
+                extras.append(struct.pack('<HHHBBQ', 0, 0, 0, 1, 0, rp_new))
         new_lp = append(out, source[lp:lp+48])
         write(out, 'HH', new_lp, len(records), len(extras))
         new_tp = append(out, b''.join(records+extras))

@@ -102,6 +102,7 @@ def main():
     options = dict(
         targetCollection=collection.name, selectedOnly=False, exportAllLODs=True,
         exportBlendShapes=False, rotate90=bool(collection["SF6SourceRotate"]),
+        splitLoopVertices=False,
         useBlenderMaterialName=False, preserveBoneMatrices=True,
         exportBoundingBoxes=False, autoSolveRepeatedUVs=True,
         preserveSharpEdges=True,
@@ -138,14 +139,16 @@ def main():
         direct_path.parent.mkdir()
         assert mesh_io.exportREMeshFile(str(direct_path), dict(
             options, exportBlendShapes=True, sf6HybridPreserve=True))
-        assert direct_path.read_bytes() == output_bytes
+        comparison = importlib.import_module(repo.name + '.tests.test_sf6_hybrid_export')
+        comparison.hybrid_files_equal(output, sf6.SourceMesh(direct_path.read_bytes()),
+                                      sf6.SourceMesh(ordinary_path.read_bytes()))
         mesh_io.importREMeshFile(str(direct_path), IMPORT_OPTIONS.copy())
         imported = bpy.data.collections[bpy.context.scene["REMeshLastImportedCollection"]]
         roundtrip_path = root / "roundtrip" / args.source_file.name
         roundtrip_path.parent.mkdir()
         assert mesh_io.exportREMeshFile(str(roundtrip_path), dict(
             targetCollection=imported.name, exportBlendShapes=True, rotate90=True))
-        assert roundtrip_path.read_bytes() == output_bytes
+        assert roundtrip_path.read_bytes() == direct_path.read_bytes()
 
     result = dict(test="transferred_new_vertices_export_and_roundtrip", passed=True,
                   part=chosen, transferred_vertices=3,

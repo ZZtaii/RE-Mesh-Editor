@@ -12,6 +12,36 @@ from bpy.props import (StringProperty,
 					   )
 
 
+def getBatchMeshWeightLimitDefault(path):
+	"""Use the destination game's total weight slots, or eight for an unknown path."""
+	from .blender_re_mesh import getMeshWeightLimits
+	from .file_re_mesh import meshFileVersionToGameNameDict
+	try:
+		version = int(os.path.splitext(path)[1].lstrip("."))
+	except (TypeError, ValueError):
+		return 8
+	game = meshFileVersionToGameNameDict.get(version)
+	return getMeshWeightLimits(game)[1] if game is not None else 8
+
+
+def setBatchMeshWeightLimit(item, value, explicit=False):
+	"""Distinguish an automatically chosen default from a saved/user choice."""
+	item.limitTotalCount = value
+	if isinstance(item, bpy.types.PropertyGroup):
+		item.batchWeightLimitExplicit = bool(explicit)
+
+
+def getBatchMeshWeightLimit(item):
+	# Fresh operator items may be supplied with only a destination path.
+	if hasattr(item, "is_property_set") and not item.is_property_set("limitTotalCount"):
+		return getBatchMeshWeightLimitDefault(item.path)
+	return getattr(item, "limitTotalCount", getBatchMeshWeightLimitDefault(item.path))
+
+
+def update_batchWeightLimit(self, _context):
+	self.batchWeightLimitExplicit = True
+
+
 def update_relPathToAbs(self,context):
 	try:
 		if "//" in self.path:
@@ -23,6 +53,8 @@ def update_relPathToAbs(self,context):
 		self.invalid = True
 	else:
 		self.invalid = False
+	if self.exportType == "MESH" and not self.batchWeightLimitExplicit:
+		setBatchMeshWeightLimit(self, getBatchMeshWeightLimitDefault(self.path))
 class ExporterNodePropertyGroup(bpy.types.PropertyGroup):
 	name: StringProperty(
         name="",
@@ -69,6 +101,12 @@ class ExporterNodePropertyGroup(bpy.types.PropertyGroup):
 		description = "",
 		default = ""
 	)
+	batchWeightLimitExplicit: BoolProperty(
+		name="Weight Limit Explicit",
+		description="Internal marker for a saved or manually edited batch weight limit",
+		default=False,
+		options={'HIDDEN', 'SKIP_SAVE'},
+	)
 	path: StringProperty(
         name="",
 		subtype="FILE_PATH",
@@ -103,6 +141,34 @@ class ExporterNodePropertyGroup(bpy.types.PropertyGroup):
 	   name = "Split Sharp Edges",
 	   description = "Edge splits all edges marked as sharp to preserve them on the exported mesh.\nNOTE: This will modify the exported mesh",
 	   default = True)
+	splitLoopVertices : BoolProperty(
+	   name = "Split Vertices For Corner Attributes",
+	   description = "Create exported vertices when corner normals, tangents, UVs, or colors differ. Disable to keep one exported vertex per Blender vertex",
+	   default = True)
+	limitTotal : BoolProperty(
+	   name = "Limit Total",
+	   description = "Limit bone influences on export. Enable Normalize Weights to renormalize the remaining weights",
+	   default = False)
+	limitTotalCount : IntProperty(
+	   name = "Max Weights",
+	   description = "Maximum bone influences per vertex when Limit Total is enabled",
+	   default = 8,
+	   min = 1,
+	   max = 32,
+	   update = update_batchWeightLimit)
+	normalizeWeights : BoolProperty(
+	   name = "Normalize Weights",
+	   description = "Normalize each set of vertex weights to 1.0 on export",
+	   default = True)
+	shapeKeyExportMode : EnumProperty(
+		name = "Export Shapekeys?",
+		description = "Choose whether and how Monster Hunter Wilds shape keys are exported",
+		items = [
+			("NO", "No", "Do not export shape keys or Wilds blendshape data"),
+			("MODE0", "Mode 0", "Keep shading consistent with meshes without blendshapes; recommended for custom or heavily edited meshes"),
+			("MODE1", "Mode 1", "Use vanilla-style blendshape shading; recommended for retaining vanilla data"),
+		],
+		default = "MODE0")
 	useBlenderMaterialName : BoolProperty(
 	   name = "Use Blender Material Names",
 	   description = "If left unchecked, the exporter will get the material names to be used from the end of each object name. For example, if a mesh is named LOD_0_Group_0_Sub_0__Shirts_Mat, the material name is Shirts_Mat. If this option is enabled, the material name will instead be taken from the first material assigned to the object",

@@ -291,10 +291,15 @@ class ModFolderTests(unittest.TestCase):
         values = dict(bundle_name='Variants', parent_mod_name='Character Menu',
                       create_dummy_parent=True, parent_folder_name='000 Menu',
                       parent_categories='!Characters > Multiple; Colours',
-                      extra_categories='Hair; Colours', export_content='MENU')
+                      extra_categories='Hair; Colours', export_content='MENU',
+                      selectedOnly=True, sf6HybridPreserve=False,
+                      targetCollection='esf033_002_01.mesh', rotate90=False)
         package.save_defaults(path, values)
         self.assertEqual(package.load_defaults(path), values)
         self.assertNotIn('export_content', package.filter_defaults(dict(export_content='invalid')))
+        self.assertNotIn('selectedOnly', package.filter_defaults(dict(selectedOnly='yes')))
+        self.assertNotIn('sf6HybridPreserve', package.filter_defaults(dict(sf6HybridPreserve='no')))
+        self.assertNotIn('rotate90', package.filter_defaults(dict(rotate90='no')))
 
     def test_destination_notice_ignores_empty_and_unrelated_folders(self):
         self.assertEqual(package.destination_conflicts(self.root, 'New', self.asset), [])
