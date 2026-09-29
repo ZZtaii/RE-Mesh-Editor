@@ -4,15 +4,13 @@
 
 A Blender addon for importing and exporting RE Engine `.mesh` and `.mdf2` (material) files natively, with no Noesis required.
 
-This is a fork of [RE Mesh Editor](https://github.com/NSACloud/RE-Mesh-Editor) by **NSA Cloud**. It retains the base addon's tools and adds a Street Fighter 6 workflow: source-preserving mesh edits, export straight into a Fluffy Mod Manager folder, and import/export validation. The fork's testing focuses on SF6; it does not establish compatibility for every other RE Engine game.
+This fork of **[NSA Cloud's RE Mesh Editor](https://github.com/NSACloud/RE-Mesh-Editor)** adds SF6 source preservation, hybrid export with corrective shapes, modifier and sculpt-detail export, and Fluffy Mod Manager folder creation. It also integrates improvements from **[Ridog8's MeshFixes](https://github.com/Ridog8/RE-Mesh-Editor-MeshFixes)**. Testing focuses on Street Fighter 6; support for other games follows the base addon and the validation limits below.
 
 ### [Download the latest release](https://github.com/ZZtaii/RE-Mesh-Editor/releases/latest)
 
-Current release: **V0.66-SF6.5** · [Change log](#change-log) · [SF6 workflows](#street-fighter-6-workflows)
+Current stable release: **[V0.68](https://github.com/ZZtaii/RE-Mesh-Editor/releases/tag/v0.68)** · [Choose an export mode](#choose-an-export-mode) · [Change log](#change-log)
 
-> **V0.66-SF6.5 is the stable fork release.** Keep backups of your work and follow the source-preservation limits below.
-
-> **Tested with Blender 4.5.3 LTS.** For newer versions, check [the upstream Blender performance report](https://projects.blender.org/blender/blender/issues/155858) and its current status.
+> **Recommended: Blender 4.5.3 LTS**, the version used for this fork's validation. Blender 5+ compatibility has not been established by these checks.
 
 <img width="1888" height="945" alt="RE Mesh Editor in Blender" src="https://github.com/user-attachments/assets/3a072b6e-fa98-43d1-9fb0-34c2942c97a1" />
 
@@ -20,20 +18,17 @@ Current release: **V0.66-SF6.5** · [Change log](#change-log) · [SF6 workflows]
 
 ## What this fork adds
 
-### SF6 source preservation
-Import an original SF6 mesh with its source data embedded in the project, then patch supported edits into that original file. Unedited round trips have passed byte-for-byte checks. The exporter retains unknown deformation data, original normals, tangents, bounds and untouched LODs; it does not regenerate them for a changed silhouette. Large geometry edits and automatic lower-LOD updates remain unvalidated.
-
-### SF6 Fluffy Mod Folder export
-Export a finished mesh directly as an installable Fluffy Mod Manager folder, with the correct native game path and a `modinfo.ini` written for you. It also builds grouped mods: bundles that collect variants under one heading, and nested menus for larger packs.
-
-### Import and export validation
-A mesh file that fails to parse no longer wipes your scene first. Source-preservation export now refuses unsupported edits with an explanation instead of quietly falling back to the ordinary exporter and producing a file that breaks in game.
+- **SF6 source preservation:** patches supported edits into the embedded original mesh, retaining its skeleton, deformation data and untouched LODs. Untouched roundtrips pass byte-for-byte checks.
+- **SF6 hybrid shape export:** rebuilds edited LOD0 geometry while retaining compatible corrective movement, UVs and shading. Tested workflows include Subdivision, Mirror, Solidify, Weighted Normal, Multires sculpting and Data Transfer custom normals.
+- **Fluffy mod folder export:** writes the mesh to its native game path and creates `modinfo.ini`, with selection, bundles and nested menus.
+- **Safer import/export:** validates mesh parsing before clearing the scene and refuses unsupported preservation edits before replacing the destination.
+- **MeshFixes integration:** improves weights and ordinary-export corner attributes, with DD2, Monster Hunter Wilds and Onimusha format updates. Non-SF6 format changes have synthetic validation; retail-file compatibility is not established by this fork's tests.
 
 ---
 
 ## Requirements
 
-* [Blender 4.3.2 or higher](https://www.blender.org/download/) — this fork's SF6 work is validated on **Blender 4.5.3 LTS**.
+* The addon declares [Blender 4.3.2+](https://www.blender.org/download/) support. Use **Blender 4.5.3 LTS** for the validated SF6 workflow.
 
 **Not required, but strongly recommended:**
 * [RE Chain Editor](https://github.com/NSACloud/RE-Chain-Editor) — Blender addon for creating chain files, used to add physics to models.
@@ -55,7 +50,7 @@ If you are replacing an existing installation, save your work and restart Blende
 
 **Updating:** reinstall from the [latest fork release](https://github.com/ZZtaii/RE-Mesh-Editor/releases/latest), then restart Blender. V0.66-SF6.4 and newer provide an **Open Fork Releases** button for this manual workflow. V0.66-SF6.3 and older builds still show the upstream updater; use the fork's release page instead of that updater.
 
-The published V0.66-SF6.5 release reports version `0.66`. The current local development build reports `0.68` and lists ZZtaii as maintainer in Blender Preferences. Release tags are assigned separately from this internal version.
+V0.68 reports addon version `0.68` and lists **ZZtaii** as maintainer in Blender Preferences, with credits to NSA Cloud and the contributors below.
 
 ---
 
@@ -72,6 +67,16 @@ SF6 character files follow a fixed layout, and the addon reads it from the impor
 | Hair | `02` | `esf032_001_02.mesh.230110883` |
 
 The three digits before the slot are the costume number, and they are kept exactly as they are. Naming an export folder "C2" does not turn a C1 mesh into costume 2 — the mesh you selected decides the game path.
+
+### Choose an export mode
+
+| Your edit | Export settings | Result |
+|---|---|---|
+| Move existing vertices or edit supported corrective keys while retaining the original layout | **Preserve Source Data ON**, Hybrid OFF | Patches the original source. Full-collection export retains untouched source LODs, normals, tangents and bounds. |
+| Use stable modifiers, sculpt with Multires, join/add compatible geometry, or change the rig while retaining corrective motion | **Preserve Source Data ON** + **Hybrid Shape Export (LOD0) ON** | Rebuilds geometry and skeleton, with compatible corrective shapes and evaluated shading. **LOD0 only.** |
+| Make a full replacement or edits that do not fit the preservation validators | **Preserve Source Data OFF** | Ordinary export rebuilds from Blender data without the source-mode deformation guarantee. |
+
+Both preservation modes require an original SF6 import with **SF6: Preserve Source + Shape Keys**. Retain its source metadata and corrective keys. Keep a saved checkpoint before editing.
 
 ### Editing a mesh while preserving the original
 
@@ -93,27 +98,63 @@ A project saved before this feature existed has no source metadata attached. Re-
 
 ### Hybrid shape export for edited SF6 geometry and modifiers
 
-For a preserved SF6 collection with added geometry or a changed rig, leave **SF6: Preserve Source Data** on and explicitly enable **SF6: Hybrid Shape Export (LOD0)** in the direct mesh or Fluffy mod folder exporter. This rebuilds the edited geometry and skeleton. Source-mapped vertices keep untouched source blend-shape deltas, while meaningful edits to their Blender shape keys are exported. Added vertices in shaped parts receive zero deltas unless their matching Blender shape keys contain explicit movement. The result contains **LOD0 only**; lower LODs and other original deformation data are not fully preserved. The exporter reports the source-mapped, rebuilt, and shaped vertices, triangles, and shape links for each part in Blender's system console, including edited source shape entries, with warnings for rebuilt parts.
+Hybrid export rebuilds the mesh and skeleton while retaining compatible LOD0 corrective motion. Untouched source-mapped vertices keep their original deltas; meaningful Blender corrective edits are exported. Stable modifiers generate matching corrective movement on their new vertices. Other added geometry needs movement in the matching shape keys; missing movement becomes zero deltas.
 
-Hybrid export needs the original embedded source from an import made with **SF6: Preserve Source + Shape Keys**. With **Selected Objects Only** off, export exactly one object for each original LOD0 part. Joined new geometry within an original part can be rebuilt while source-mapped vertices keep their untouched original deltas or export their edited Blender deltas. A whole replacement object without source metadata can be used when its Group/Sub/material name matches the original part **and** its shape ranges and normal layout can be rebuilt safely; otherwise export refuses without replacing the destination. A supported replacement can carry explicit Blender deltas for the source's shape names. Shape-link counts alone do not mean that part moves with the shape. Hybrid export does not infer movement for new geometry: shape-key edits on rebuilt vertices must be authored or transferred. Leave the hybrid option off for the strict source-preservation path, which keeps the original layout and all source LODs.
+1. Import the original SF6 mesh with **SF6: Preserve Source + Shape Keys**. Keep **Merge Mesh Groups** and **Merge Armature** disabled.
+2. Retain the embedded source and matching corrective keys while editing.
+3. Export in **Object Mode** with **SF6: Preserve Source Data** and **SF6: Hybrid Shape Export (LOD0)** enabled, in the direct or Fluffy folder exporter.
+4. Choose the modifier **viewport level** for export density. Sculpt/Render levels do not select it, and scene Simplify can reduce it.
+5. Enable **Limit Total**, set **Max Weights = 6**, and enable **Normalize Weights** when generated vertices add influences. Reimport the result and inspect joint motion, seams and shading in game.
 
-Active viewport modifiers are evaluated on private copies of the Basis and every corrective key. Generated vertices receive the evaluated corrective movement, so a different vertex count alone no longer prevents export. Each key must produce the same ordered vertex, edge, and polygon layout as the Basis. The Basis is triangulated once and its layout is reused for every key. Hybrid export also splits differing UV corners and distinct evaluated corner normals, using explicit row mappings shared by the keys; this can increase the exported vertex count. Weighted Normal shading is retained even with **Keep Sharp** on and the exporter's **Split Sharp Edges** off. Meaningful authored normal fans are also preserved without an active modifier. The ordinary **Split Vertices For Corner Attributes** option is disabled internally during hybrid export so later cleanup cannot change that shared layout. The user's mesh, modifiers, shape values, and drivers remain unchanged. The exported mesh's Armature modifier preview pose is excluded from the generated geometry; external objects referenced by other modifiers are evaluated in their current scene state.
+The Basis and each corrective are evaluated on private copies. UV and normal corners use consistent export rows shared by every corrective; this may increase vertex count. The editable mesh, keys, drivers and modifier settings remain unchanged. The exported mesh's Armature preview pose is excluded; external modifier references use their current evaluated scene state.
 
-Blender 4.5 checks cover Catmull-Clark and Simple Subdivision, Simple Deform, Smooth, Displace, Array without merging, Weighted Normal with **Keep Sharp** on/off, Mirror with merging/clipping and UV flips, and Solidify with/without rims in Simple and Complex modes. Combined checks include Subdivision → Smooth, Subdivision → Weighted Normal, Solidify → Weighted Normal, and Mirror → Solidify. These are tested configurations, not a guarantee for every modifier stack. Shape-dependent welding or remeshing is refused when the evaluated layouts differ, including a Mirror seam that merges in the Basis but separates in a corrective. Existing SF6 normal-table and vertex-count limits still apply; some dense Solidify rim configurations exceed the normal palette limit. Subdivision can interpolate more than six bone influences: enable **Limit Total Weights** with a count of **6** and **Normalize Weights** when needed. Fluffy folder export uses those add-on weight-cleanup defaults. Rebuilt shapes require unmasked, relative keys referenced to the Basis. Modifiers cannot recover keys or source metadata that were removed from a project.
+#### Tested modifiers
 
-Mirror uses Blender's evaluated vertex groups and shape coordinates. It retains each existing corrective target name; it does not create or retarget opposite-side corrective controls. A one-sided key can therefore move both mirrored sides under the same game target. Author the intended left/right keys and inspect joint animation in game.
+| Modifier | Coverage and practical limits |
+|---|---|
+| **Subdivision** | Catmull-Clark and Simple, including evaluated corrective movement. Higher density can increase bone influences and reach SF6 format limits. |
+| **Multires** | Stored sculpt detail with embedded, external or packed grids and retained corrective keys. Use Object Mode viewport levels; pack external grids for a self-contained project. |
+| **Mirror** | Merging/clipping, UV flips and evaluated weights. Topology must remain stable across keys. Existing corrective names are retained; opposite-side controls are not created. |
+| **Solidify** | Simple/Complex modes, with and without rims. Dense rim configurations can exceed SF6 normal-table limits. |
+| **Weighted Normal** | Keep Sharp on/off, including export with Split Sharp Edges off. Authored corner-normal fans are also preserved without an active modifier. |
+| **Data Transfer** | Final Basis custom normals, with Topology/spatial mapping, mixing, masks and hidden references. UV, color and weight transfer are outside the validated scope. |
 
-Multires sculpt displacement has dedicated Blender 4.5 validation with retained corrective keys, stored subdivision levels, embedded and external grids saved/reopened, and Multires → Smooth. Export from **Object Mode** and choose the **viewport level** you want in the game mesh; higher Sculpt or Render levels do not select the export resolution, and scene Simplify can reduce it. The private snapshots retain the stored sculpt detail without changing the editable base mesh or keys. Missing, malformed, truncated, or incompatible external displacement files are refused before replacing the destination. Packing the displacement file in Blender makes the project self-contained; library-relative external files on linked meshes require making the mesh local and packing first. Multires detail is shared across the base shape keys rather than creating new corrective channels. Evaluated corrective endpoints are retained, but intermediate or combined game key values can approximate Blender's nonlinear sculpt displacement. Keep an appropriate export density and test joint animation in game.
+Smooth, Simple Deform, Displace and Array without merging also have checks. Tested combinations include Subdivision → Smooth/Weighted Normal/Data Transfer, Solidify → Weighted Normal, Mirror → Solidify and sculpted Multires → Smooth/Data Transfer. Coverage applies to tested configurations, not every possible stack.
 
-**Data Transfer → Face Corner Data → Custom Normals** uses the same final evaluated corner-normal path. Keep the reference mesh outside the export collection, or mark it **MeshExportExclude**. Use **Nearest Face Interpolated** for meshes with different topology; **Topology** requires matching evaluated corner counts at that position in the modifier stack. Missing or empty normal sources and mismatched topology corner counts are refused before replacing the destination. Sources can be hidden and are evaluated in their current scene state, including their own modifiers; the exporter does not reset the reference to its Basis or rest pose. Place Data Transfer after Subdivision/Multires and after Weighted Normal when the transferred normals should be the final shading. Later modifiers can change that shading. The export report lists the reference, mapping, mixing and mask settings. This support concerns final Basis custom normals and corrective coordinates; it does not add separate per-key normal channels or establish support for Data Transfer UV, color or weight channels. Validate shading and animation in game.
+#### Data Transfer normals
 
-Data Transfer checks in Blender 4.5 cover Topology and Nearest Face Interpolated, calculated smooth normals as well as authored custom normals on the reference, Replace/Mix with partial factors, a vertex-group mask, hidden and excluded references with evaluated modifiers, and transfers after Catmull-Clark Subdivision or sculpted Multires. Export Split Sharp Edges on/off retains the transferred corner shading. Zero-factor and maximum-distance transfers with no matches remain valid no-ops. Corrective coordinates and UVs are checked alongside final normals, including strict reimport/export roundtrips.
+Enable **Data Transfer → Face Corner Data → Custom Normals**. Keep the reference mesh outside the export collection, or mark it **MeshExportExclude**. Hidden references work; their modifiers, transforms and active shapes are evaluated in their current scene state.
 
-Sculpting source-mapped geometry works when its Basis and corrective shape keys move together. Blender can introduce tiny coordinate drift across repeated sculpt strokes; hybrid export tolerates that drift and keeps the original source deltas. Meaningful edits to a source-mapped corrective key are exported as Blender deltas, rounded to the mesh format's precision. Shape-key edits outside that key's original authored vertex range are rejected because they cannot fit its source shape target.
+Use **Nearest Face Interpolated** for different meshes. **Topology** needs matching evaluated corner order/count at that position in the stack. Place Data Transfer after Subdivision/Multires and after Weighted Normal when transferred normals should be final; later modifiers can alter them. Calculated smooth normals and authored custom normals are valid sources. Mixing and masks follow Blender's evaluated result.
 
-An exact **C_Hip plane placeholder** made by the stub tool can keep its source part metadata after its shape keys are cleared. Hybrid export now keeps that plane's ordinary geometry and omits its original corrective shape links; other parts retain their shape data. The placeholder must be the tool's four-vertex quad at the origin, weighted entirely to C_Hip, with no shape keys. Other replacement geometry still follows the usual hybrid validation.
+Missing/empty sources and mismatched topology corner counts are refused before replacing the destination. This exports final Basis shading and corrective coordinates; it does not add separate per-key normal channels.
 
-For a hybrid export of a subset through either exporter, enable **Selected Objects Only** and select the desired LOD0 mesh objects in Object Mode. The output contains only those parts; unselected parts and lower LODs are omitted. The armature does not need to be selected. Each selected part keeps only the source shape links that belong to it, with untouched original deltas or edited Blender deltas on source-mapped vertices and any explicit Blender deltas on added vertices. Selecting only parts without source shape links is allowed and produces a mesh without blend shapes; the exporter reports this explicitly. A shaped replacement with neither safely mapped source vertices nor nonzero matching shape-key deltas is refused when selected alone.
+#### Limits and selection
+
+- Hybrid writes **LOD0 only** and rebuilds the skeleton and normal-recalculation table. It does not retain all original deformation data or lower LODs.
+- Keys must be unmasked, relative and referenced to the Basis. Every key must produce the same ordered evaluated vertex, edge and polygon layout. Welding or remeshing that changes this layout between keys is refused.
+- SF6 vertex and normal-table limits still apply. Export cannot recover source metadata or keys removed from the project.
+- Multires detail is shared across existing keys. Intermediate or combined game key values can approximate Blender's nonlinear sculpt displacement. Invalid external grids are refused; linked meshes with library-relative grids must be made local and packed first.
+- With selection off, retain exactly one object for each original LOD0 part. With **Selected Objects Only** on, select the desired LOD0 meshes; the armature need not be selected. Unselected parts and all lower LODs are omitted. Parts with no shape links may export without blend shapes, which is reported explicitly.
+
+<details>
+<summary>Source-mapped sculpt edits, replacements and C_Hip placeholders</summary>
+
+Sculpt source-mapped geometry with its Basis and corrective keys moving together. Small sculpt-rounding drift retains original deltas; meaningful corrective edits are exported at the mesh format's precision. Edits outside a source key's original authored vertex range are rejected.
+
+Whole replacements without source metadata require matching original Group/Sub/material naming and safely rebuilt shape ranges and normal layouts. Movement must be authored in matching Blender keys. A shaped replacement without safely mapped source vertices or nonzero matching deltas is refused when selected alone.
+
+An exact stub-tool **C_Hip plane placeholder** can retain its source metadata after its shape keys are cleared. Hybrid keeps its ordinary plane geometry and omits its old corrective links. This exception requires the tool's four-vertex quad at the origin, fully weighted to C_Hip, with no shape keys.
+
+The export report lists source-mapped/rebuilt vertices, triangles, shape links, authored delta entries and evaluated modifiers. Use it to check whether added geometry has corrective movement.
+
+</details>
+
+#### Validation
+
+Blender **4.5.3 LTS** validation includes **25 Data Transfer checks / 16 byte-identical strict roundtrips**, **35 snapshot/Weighted Normal regressions**, and earlier **19-check Multires suites** against source and installed builds. A full-model export retained **14 parts / 113 shape links** and strict-roundtripped byte-identically. UVs and corrective endpoints matched at encoded precision; normals matched Blender within one encoding step.
+
+These checks establish Blender evaluation and file contents. New modifier, sculpting and normal-transfer workflows still need **in-game validation**.
 
 ### Batch export and preservation settings
 
@@ -234,13 +275,13 @@ This is the base addon's supported-game list. The source-preservation and folder
 <details>
   <summary>Short version: replacing a model</summary>
 
-This is the ordinary mesh-rebuild workflow. For a new SF6 model or topology, disable **SF6: Preserve Source Data** at export. Ordinary export does not provide the source-mode deformation-data guarantee.
+This is the ordinary mesh-rebuild workflow. Use **SF6: Preserve Source Data OFF** for a full replacement. To retain corrective motion on compatible edited geometry, see [Hybrid shape export](#hybrid-shape-export-for-edited-sf6-geometry-and-modifiers). Ordinary export does not provide the source-mode deformation guarantee.
 
 1. Find the mesh you want to replace inside the extracted .pak files.
 2. Create a folder for your mod, then recreate the folder structure leading to the mesh file inside your mod folder, starting from the "natives" folder.
 3. Import the mesh file from File > Import > RE Mesh. Use the default import settings.
 4. Import the model you want to replace it with.
-5. Pose your model and rig it to the armature from the imported mesh file.
+5. Fit the model to the imported armature's rest pose and rig it, then test its movement in Pose Mode.
 6. In Edit Mode, select the geometry and separate by material (P > By Material) so that every mesh only has one material.
 7. Move your meshes into the red .mesh collection, either by dragging them onto it in the outliner or pressing M (Move To Collection).
 8. Rename your meshes to the same naming format as the imported mesh. (Example: Group_0_Sub_0__**MaterialName**)
@@ -248,7 +289,7 @@ This is the ordinary mesh-rebuild workflow. For a new SF6 model or topology, dis
 10. Rename the mdf material objects to your new material names in Object Properties > RE MDF Material Settings > Material Name.
 11. Change the texture bindings in the RE MDF Material settings to new paths for any textures you want to change.
 12. Duplicate or add material presets if necessary. **NOTE: The names and amount of materials in the mdf must match the mesh file or you will get either an invisible model or a checkerboard texture in game.**
-13. Open your textures in Photoshop or any image editor with full .dds saving support. (Not Gimp) Install the [Intel DDS Plugin](https://www.intel.com/content/www/us/en/developer/articles/tool/intel-texture-works-plugin.html) if using Photoshop.
+13. Open your textures in an editor that supports the required DDS compression. If using Photoshop, install the [Intel DDS Plugin](https://www.intel.com/content/www/us/en/developer/articles/tool/intel-texture-works-plugin.html) when needed.
 14. Adjust the color channels of your textures so that they match the corresponding RE Engine texture's color channel layout.
 15. Save edited textures to their own folder as a .dds file. For the compression settings, use BC7 sRGB if it's an albedo/color map or BC7 Linear if it's anything else.
 16. In the RE MDF tab on the sidebar, set the Mod Directory to the natives\STM\ folder inside your mod folder.
@@ -283,7 +324,16 @@ You may be using an outdated .mdf2 file. Extract from the latest patch pak, as m
 The collection has no source metadata — either it was never imported in that mode, or it was saved before the feature existed. Re-import the original mesh with **SF6: Preserve Source + Shape Keys**, or turn **SF6: Preserve Source Data** off to use the ordinary exporter.
 
 **My SF6 export was rejected for a UV or material change.**
-Source preservation does not support UV edits, added or removed UV layers, or material reassignment. Use the ordinary exporter for that kind of change.
+Strict source preservation does not support UV edits, added/removed UV layers or material reassignment. For compatible rebuilt LOD0 geometry with corrective motion, use the hybrid workflow and follow its part-matching limits. Otherwise use ordinary export with preservation OFF.
+
+**Subdivision changed my vertex count and export was rejected.**
+Use **SF6: Hybrid Shape Export (LOD0)** with retained source data and matching corrective keys. If hybrid also refuses, check the reported topology or format limit; a modifier must produce the same ordered layout for every key.
+
+**My Multires sculpt detail is missing from the export.**
+Export in Object Mode at the intended viewport level. Check scene Simplify and ensure external sculpt grids are available; pack them for a self-contained project.
+
+**My transferred normals do not match the final shading.**
+Enable Data Transfer's **Face Corner Data → Custom Normals**, check its source/mapping and the modifier's viewport toggle, and inspect modifier order. Put it after Weighted Normal when transferred normals should be final. Hidden references are valid and use their current evaluated scene state.
 
 **My bundle or menu did not appear in Fluffy.**
 Check that **Parent Mod** exactly matches the parent entry's **Display Name**, and refresh Fluffy's mod list if it was already running. A bundle groups by an identical **Bundle Name** across variants, with Parent Mod left empty.
@@ -298,13 +348,20 @@ Questions about the SF6 features in this fork belong on [this repository's issue
 
 ## Change log
 
-### V0.68 (development)
-* Integrated [Ridog8's MeshFixes](https://github.com/Ridog8/RE-Mesh-Editor-MeshFixes) through commit `02e4988`: improved weight packing, optional normalization, corner attribute splitting, DD2 secondary weights and current DD2 format, Monster Hunter Wilds shape export modes, and Onimusha: Way of the Sword format support.
-* Fixed SF6 material preview transparency: StitchMap blue carries stitch data and no longer drives material opacity. Existing alpha textures and other games' StitchMap behavior remain supported.
-* Added direct export defaults and remembered batch options for corner splitting, normalization, weight limits, and Wilds shape modes. Kept the fork's SF6 source, hybrid, selection, and Fluffy workflows.
-* Kept Auto Solve Repeated UVs consistent after save/reopen, initialized weight limits from the destination game, and protected real bone influences from non-bone mask groups when Limit Total is enabled.
-* Retired the SF6 body shape-transfer panel, operators, and implementation from the addon package. Existing shape keys can still be imported, edited, and exported through the supported SF6 paths.
+### [V0.68 — Modifiers work with Hybrid export](https://github.com/ZZtaii/RE-Mesh-Editor/releases/tag/v0.68)
 
+* Added hybrid modifier evaluation with corrective movement on generated vertices, consistent UV/normal rows and guarded shape topology.
+* Added stored Multires sculpt-detail export and Data Transfer custom-normal validation. Expanded checks for Subdivision, Mirror, Solidify and Weighted Normal.
+* Integrated [Ridog8's MeshFixes](https://github.com/Ridog8/RE-Mesh-Editor-MeshFixes) through commit `02e4988`: weight packing, normalization, ordinary corner splitting, DD2 weights/format, Wilds shape modes and Onimusha: Way of the Sword support.
+* Fixed SF6 StitchMap preview transparency while retaining genuine alpha sources.
+* Added export defaults and remembered options for corner splitting, normalization, weight limits and Wilds shape modes. Improved repeated-UV persistence and protected bone influences from non-bone mask groups during limiting.
+* Retired the former body shape-transfer UI; existing corrective keys remain importable, editable and exportable.
+
+### [V0.67 — Hybrid Export](https://github.com/ZZtaii/RE-Mesh-Editor/releases/tag/V0.67)
+
+* Added explicit SF6 hybrid LOD0 export with compatible corrective links, rebuilt geometry/skeleton and normal-recalculation tables.
+* Added selected-part source/hybrid export, source-mapped sculpt-rounding tolerance and meaningful corrective edits.
+* Improved C_Hip placeholder handling, Fluffy Selected Objects Only and dialog settings after failed exports, plus maintainer/preferences information.
 
 ### V0.66-SF6.5
 * Fixed legacy RE Toolbox batch compatibility when the caller omits the SF6 preservation option.
