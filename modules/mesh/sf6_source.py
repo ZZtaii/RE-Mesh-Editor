@@ -15,6 +15,12 @@ import zlib
 
 import numpy as np
 
+try:
+    from .operation_progress import stage as progress_stage
+except ImportError:  # Standalone binary-table test utilities.
+    def progress_stage(message, value=None):
+        pass
+
 SOURCE = 'SF6SourceText'
 META = 'SF6SourceMeta'
 VERTEX_ID = 'sf6_source_vertex'
@@ -197,6 +203,38 @@ def _write_hip_stub(out,src,part,obj,rotate):
         out[start:start+uv.nbytes]=uv.tobytes()
 
 
+def _import_face_ids(original_faces, polygons):
+    """Map Blender's validated triangles back to exact source rows.
+
+    Blender removes duplicate polygons. Only exact repeated oriented triangles
+    may be absent here; losing or rewiring any unique triangle still rejects.
+    """
+    from collections import defaultdict, deque
+    available = defaultdict(deque)
+    for index, triangle in enumerate(original_faces):
+        available[tuple(int(v) for v in triangle)].append(index)
+    expected = set(available)
+    seen, result = set(), []
+    for polygon in polygons:
+        triangle = tuple(int(v) for v in polygon.vertices)
+        if len(triangle) != 3 or triangle not in available or not available[triangle]:
+            raise ValueError('Import rewired or added a source triangle')
+        result.append(available[triangle].popleft())
+        seen.add(triangle)
+    if seen != expected:
+        raise ValueError('Import removed a unique source triangle')
+    return np.asarray(result, dtype=np.int32), len(result) != len(original_faces)
+
+
+def _missing_source_faces(original_faces, face_ids, collapsed_duplicates=False):
+    if not collapsed_duplicates:
+        return set(range(len(original_faces))) - set(face_ids.tolist())
+    # One imported polygon represents all exact duplicate source triangles.
+    # Keep all aliases while it exists, remove all aliases when it is deleted.
+    retained = {tuple(original_faces[int(i)]) for i in face_ids}
+    return {i for i, triangle in enumerate(original_faces) if tuple(triangle) not in retained}
+
+
 def attach_source(filepath, collection, objects, rotate=True, source=None):
     """Attach verified retail metadata after the clean upstream geometry importer."""
     import bpy
@@ -222,16 +260,34 @@ def attach_source(filepath, collection, objects, rotate=True, source=None):
     by_start = {}
     for part in src.parts:
         by_start.setdefault(part['start'],part)
-    for start, obj in objects.items():
+    for index, (start, obj) in enumerate(objects.items()):
+        progress_stage(f"Preserving source shapes {index+1}/{len(objects)}: {obj.name}", 60+25*index/max(1,len(objects)))
         part = by_start[start]
         mesh = obj.data
-        if len(mesh.vertices) != part['count'] or len(mesh.polygons) != part['faces']:
-            raise ValueError('Import changed topology: '+obj.name)
+        if len(mesh.vertices) != part['count']:
+            raise ValueError('Import changed vertex topology: '+obj.name)
+        try:
+            face_ids, collapsed = _import_face_ids(src.faces(part), mesh.polygons)
+        except ValueError as error:
+            raise ValueError('Import changed topology: '+obj.name+': '+str(error)) from error
+        if collapsed:
+            obj['SF6CollapsedDuplicateFaces'] = True
+            progress_stage(f'{obj.name}: retaining {part["faces"]-len(face_ids)} exact duplicate source triangles in preservation data')
         obj[META] = json.dumps(part)
         obj['SF6SourceSHA256'] = source_hash
         for name, domain, n in ((VERTEX_ID,'POINT',len(mesh.vertices)),(FACE_ID,'FACE',len(mesh.polygons))):
             a=mesh.attributes.new(name,'INT',domain)
-            a.data.foreach_set('value', np.arange(n,dtype=np.int32))
+            a.data.foreach_set('value', face_ids if name == FACE_ID else np.arange(n,dtype=np.int32))
+        # Per-row origin survives Blender's Object Join, unlike object properties.
+        # Four 32-bit words disambiguate source files; start+1 reserves zero for
+        # geometry that was not imported with verified source provenance.
+        for j in range(4):
+            value = int(source_hash[j*8:j*8+8], 16)
+            if value >= 2**31: value -= 2**32
+            attr = mesh.attributes.new('sf6_origin_hash_'+str(j), 'INT', 'POINT')
+            attr.data.foreach_set('value', np.full(len(mesh.vertices), value, np.int32))
+        attr = mesh.attributes.new('sf6_origin_part', 'INT', 'POINT')
+        attr.data.foreach_set('value', np.full(len(mesh.vertices), part['start']+1, np.int32))
         basis = _to_blender(src.positions(part),rotate)
         mesh.vertices.foreach_set('co',basis.ravel())
         shapes = list(src.part_shapes(part))
@@ -275,7 +331,13 @@ def _validate_uvs(src, part, mesh, ids, object_name):
             raise ValueError('Unsupported source UV stride: '+object_name)
         expected = np.frombuffer(src.data, '<f2', part['count']*2,
                                  offset+part['start']*stride).reshape(-1, 2).copy()
-        # Match the importer's half-float V conversion, including rounding.
+        # New imports use high-precision V conversion. Retain exact legacy
+        # validation for old saved meshes that predate the import marker.
+        precision = mesh.get('REUVPrecisionVersion', 1)
+        if precision not in (1, 2):
+            raise ValueError('Unknown imported UV precision version: '+object_name)
+        if precision == 2:
+            expected = expected.astype(np.float64)
         expected[:, 1] *= -1
         expected[:, 1] += 1
         expected = expected.astype('<f4')[ids[loop_vertices]]
@@ -288,6 +350,7 @@ def _validate_uvs(src, part, mesh, ids, object_name):
 def export_source(filepath, collection, options):
     """Patch a source copy, validate all edits, then atomically replace destination."""
     import bpy
+    progress_stage("Decoding and verifying embedded source", 5)
     text = bpy.data.texts.get(collection.get(SOURCE,''))
     if text is None:
         raise ValueError('Missing embedded SF6 source. Re-import the original mesh.')
@@ -300,7 +363,7 @@ def export_source(filepath, collection, options):
     selected = set(bpy.context.selected_objects) if options.get('selectedOnly') else None
     if selected is not None:
         selected = {o for o in collection.all_objects if o in selected and o.type == 'MESH'
-                    and not o.get('~TYPE') and not o.get('MeshExportExclude')}
+                    and not o.get('~TYPE')}
         if not selected:
             raise ValueError('No selected source mesh objects in the target collection')
     if options.get('rotate90',True) != rotate:
@@ -333,12 +396,14 @@ def export_source(filepath, collection, options):
         if part['start'] in objects:
             raise ValueError('Duplicated source mesh: '+obj.name)
         objects[part['start']] = obj
-    for part in json.loads(collection['SF6ImportedParts']):
+    imported_parts = json.loads(collection['SF6ImportedParts'])
+    for index, part in enumerate(imported_parts):
         if part not in src.parts:
             raise ValueError('Collection source metadata was modified')
+        progress_stage(f"Validating part {index+1}/{len(imported_parts)}: group {part['group']} / sub {part['sub']} / {src.materials[part['material']]}", 15+65*index/max(1,len(imported_parts)))
         obj = objects.get(part['start'])
         face_base = src.face_offset+part['face_start']*src.index_size
-        if obj is None or obj.get('MeshExportExclude'):
+        if obj is None or obj.get('~TYPE'):
             out[face_base:face_base+part['faces']*3*src.index_size] = bytes(part['faces']*3*src.index_size)
             edits['removed_faces'] += part['faces']
             edits['removed_objects'] += 1
@@ -365,7 +430,7 @@ def export_source(filepath, collection, options):
         for face, fid in zip(mesh.polygons,fids):
             if len(face.vertices)!=3 or not np.array_equal(ids[list(face.vertices)],original_faces[fid]):
                 raise ValueError('Rewired topology is unsupported in source mode: '+obj.name)
-        for fid in set(range(part['faces']))-set(fids.tolist()):
+        for fid in _missing_source_faces(original_faces, fids, bool(obj.get('SF6CollapsedDuplicateFaces', False))):
             off=face_base+fid*3*src.index_size
             out[off:off+3*src.index_size]=bytes(3*src.index_size)
             edits['removed_faces']+=1
@@ -410,9 +475,11 @@ def export_source(filepath, collection, options):
             if np.any(changed&~covered&np.any(new_delta!=0,axis=1)):
                 raise ValueError('Shape edit extends outside its authored range: '+name)
     if selected is not None:
+        progress_stage("Compacting selected geometry and deformation tables", 85)
         from .sf6_source_subset import compact_source_subset
         out = compact_source_subset(out, src, set(objects), options.get('exportAllLODs', True))
     # Full-collection export retains the existing source-layout behavior.
+    progress_stage("Writing validated source-preserving output", 95)
     directory=os.path.dirname(os.path.abspath(filepath))
     fd,temp=tempfile.mkstemp(prefix='.sf6-',suffix='.tmp',dir=directory)
     try:

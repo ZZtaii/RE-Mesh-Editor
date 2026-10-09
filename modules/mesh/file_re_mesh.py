@@ -22,6 +22,8 @@ IMPORT_MPLY = True
 
 from ..gen_functions import splitNativesPath,getPaddedPos,getBit,setBit,getPaddingAmount,textColors,raiseWarning,raiseError,read_uint,read_int,read_int64,read_uint64,read_float,read_short,read_ushort,read_ubyte,read_unicode_string,read_byte,write_uint,write_int,write_int64,write_uint64,write_float,write_short,write_ushort,write_ubyte,write_unicode_string,write_byte,read_string,write_string
 import os
+import stat
+import tempfile
 import numpy as np
 import struct
 from io import BytesIO
@@ -1903,12 +1905,11 @@ def WriteToNorTanBufferOld(bufferStream,normalList,vertexPosList,uvList,faceList
 	bufferStream.write(norTanArray.tobytes())
 
 def WriteToUVBuffer(bufferStream,uvList):
-	uvArray = np.array(uvList,dtype = np.dtype("<e"))
-	uvArray = uvArray.flatten()
-	uvArray[1::2] *= -1
-	uvArray[1::2] += 1
-	#print(uvArray)
-	bufferStream.write(uvArray.tobytes())
+	# Flip in full precision BEFORE packing float16; avoids loss near V=1.
+	uvArray = np.array(uvList,dtype = np.float64).flatten()
+	uvArray[1::2] = 1.0 - uvArray[1::2]
+	bufferStream.write(uvArray.astype(np.dtype("<e")).tobytes())
+
 
 def QuantizeWeightArrayToBytes(boneWeightsArray, normalizeWeights=True):
 	# Helper function specifically for quantizing weight arrays to bytes and including the automatic pre-normalization option,
@@ -2257,7 +2258,7 @@ def ParsedREMeshToREMesh(parsedMesh,meshVersion,normalizeWeights=True):
 						
 						#Add vertex color if it's missing and other meshes have it
 						if parsedMesh.bufferHasColor and parsedSubMesh.colorList is None:
-							parsedSubMesh.colorList = [(255,255,255,255)]*len(parsedSubMesh.vertexPosList)
+							parsedSubMesh.colorList = [(1.0,1.0,1.0,1.0)]*len(parsedSubMesh.vertexPosList)
 						
 						if parsedSubMesh.colorList is not None:
 							WriteToColorBuffer(colorBuffer,parsedSubMesh.colorList)
@@ -2675,7 +2676,46 @@ def readREMesh(filepath,lodTarget = None):
 	reMeshFile.read(file,version,lodTarget,streamingBuffer)
 	file.close()
 	return reMeshFile
-def writeREMesh(reMeshFile,filepath):
+def writeREMesh(reMeshFile, filepath):
+	"""Commit a complete ordinary/custom mesh without truncating prior output.
+
+	Keep the numeric suffix: custom serializers select their format from it.
+	Resolve symlinks so exporting through a link still updates its target.
+	The temporary file stays on the destination filesystem for os.replace.
+	"""
+	filepath = os.fspath(filepath)
+	destination = os.path.realpath(filepath)
+	old_mode = None
+	try:
+		existing = os.stat(destination)
+	except FileNotFoundError:
+		pass
+	else:
+		if not stat.S_ISREG(existing.st_mode):
+			raise OSError("Mesh destination is not a regular file: " + filepath)
+		old_mode = stat.S_IMODE(existing.st_mode)
+		if not old_mode & 0o222:
+			raise PermissionError("Mesh destination is read-only: " + filepath)
+	fd, temporary = tempfile.mkstemp(prefix='.re-mesh-',
+		suffix=os.path.splitext(filepath)[1], dir=os.path.dirname(destination))
+	os.close(fd)
+	try:
+		result = _writeREMeshDirect(reMeshFile, temporary)
+		if result is False:
+			raise RuntimeError("Mesh serializer reported failure: " + filepath)
+		# Writers must finish and close before commit (required on Windows).
+		with open(temporary, 'r+b') as written:
+			os.fsync(written.fileno())
+		if old_mode is not None:
+			os.chmod(temporary, old_mode)
+		os.replace(temporary, destination)
+		return result
+	finally:
+		if os.path.exists(temporary):
+			os.unlink(temporary)
+
+
+def _writeREMeshDirect(reMeshFile,filepath):
 	# Dispatch custom blendshape writers by generic handler key. Monster Hunter
 	# Wilds is currently the only registered implementation.
 	blendShapeWriter = getattr(reMeshFile, "_blendShapeWriter", None)
@@ -2703,5 +2743,7 @@ def writeREMesh(reMeshFile,filepath):
 		meshVersion = 2109148288#MHRSB
 	version = newVersionToMeshFileVersion.get(meshVersion,getNearestRemapVersion(meshVersion))
 	reMeshFile.meshVersion = meshVersion
-	reMeshFile.write(file,version)
-	file.close()
+	try:
+		reMeshFile.write(file,version)
+	finally:
+		file.close()

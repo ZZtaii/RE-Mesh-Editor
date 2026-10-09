@@ -15,6 +15,10 @@
 
 import bpy
 import bmesh
+import json
+from .operation_progress import tracked_operation, stage as progress_stage
+from .export_resources import owned_export_resources, track_object, track_mesh, track_armature, temporary_collection
+from .material_table import KEY as MATERIAL_TABLE_KEY, decode_table, preserve_table
 import os
 from math import radians,floor,sqrt
 from mathutils import Vector,Matrix
@@ -546,6 +550,7 @@ def importMesh(meshName = "newMesh",vertexList = [],faceList = [],vertexNormalLi
 			if index >= len(boneNameList):
 				raise Exception("Invalid mesh, bone weight index is invalid")
 	"""
+	progress_stage("Creating mesh: " + meshName)
 	meshData = bpy.data.meshes.new(meshName)
 	#Import vertices and faces
 	if vertexList == []:
@@ -567,6 +572,7 @@ def importMesh(meshName = "newMesh",vertexList = [],faceList = [],vertexNormalLi
 	)
 	#print(f"DEBUG:\t Loaded {len(vertexList)} verts and {len(faceList)} faces")
 	#Import UV Layers
+	meshData["REUVPrecisionVersion"] = 2
 	UVLayerList = (UV0List,UV1List,UV2List)
 	for layerIndex,layer in enumerate(UVLayerList):
 		if layer != []:
@@ -808,6 +814,7 @@ def importLODGroup(parsedMesh,meshType,meshCollection,materialDict,armatureObj,h
 						vertexColor0List=subMesh.colorList,
 						UV0List=subMesh.uvList,
 						UV1List=subMesh.uv2List,
+						UV2List=subMesh.uv3List,
 						boneNameList=boneNameList,
 						vertexGroupWeightList=subMesh.weightList,
 						vertexGroupBoneIndicesList=subMesh.weightIndicesList,
@@ -934,7 +941,9 @@ def resolveMeshGameNameConflict(gameName,filePath):
 
 #---RE MESH IO FUNCTIONS---#
 
+@tracked_operation("Import")
 def importREMeshFile(filePath,options):
+	progress_stage("Reading and validating mesh data", 5)
 	sf6SourceMode = filePath.endswith('.mesh.230110883') and options.get('importBlendShapes', True) and not options.get('importArmatureOnly', False)
 	if sf6SourceMode and (options.get('mergeGroups') or options.get('mergeArmature')):
 		raise ValueError('SF6 source mode requires Merge Groups and Merge Armature to be disabled')
@@ -980,6 +989,7 @@ def importREMeshFile(filePath,options):
 	meshParseTime = meshParseEndTime - meshParseStartTime
 	print(f"Mesh parsing took {timeFormat%(meshParseTime * 1000)} ms.")
 
+	progress_stage("Creating armature and mesh objects", 25)
 	if options["clearScene"]:
 		for collection in bpy.data.collections:
 			for obj in collection.objects:
@@ -1011,6 +1021,7 @@ def importREMeshFile(filePath,options):
 		meshCollection.color_tag = "COLOR_01"
 		meshCollection["~TYPE"] = "RE_MESH_COLLECTION"
 		meshCollection["LODGroupNameHash"] = str(reMesh.fileHeader.lodGroupNameHash)
+		meshCollection[MATERIAL_TABLE_KEY] = json.dumps(parsedMesh.materialNameList, ensure_ascii=False)
 		try:
 				split = splitNativesPath(filePath)
 				if split != None:
@@ -1068,9 +1079,11 @@ def importREMeshFile(filePath,options):
 	
 	
 	if sf6SourceMode:
+		progress_stage("Embedding source data and corrective shapes", 60)
 		from .sf6_source import attach_source
 		attach_source(filePath, meshCollection, meshOffsetDict, options['rotate90'], source=sf6Source)
 	meshOffsetDict.clear()
+	progress_stage("Loading materials and optional resources", 90)
 	if options["loadMaterials"] or options["loadMDFData"]:
 		#print(filePath.split(".mesh")[1])
 		if options["mdfPath"] != "":
@@ -1293,7 +1306,10 @@ def splitSharpEdges():
 
 
 
+@tracked_operation("Export")
+@owned_export_resources
 def exportREMeshFile(filePath,options):
+	progress_stage("Checking export mode and source collection", 2)
 	sourceCollection = bpy.data.collections.get(options.get('targetCollection', ''))
 	isSF6Source = sourceCollection is not None and sourceCollection.get('SF6PreserveSource')
 	if options.get('sf6HybridPreserve', False):
@@ -1313,11 +1329,20 @@ def exportREMeshFile(filePath,options):
 		if not filePath.endswith('.mesh.230110883'):
 			raise ValueError('SF6 hybrid export can only write mesh.230110883')
 		if not isSF6Source:
-			raise ValueError('SF6 hybrid export needs a collection imported with Preserve Source + Shape Keys.')
+			from .sf6_auto_hybrid import source_collection_view
+			chosen = tuple(bpy.context.selected_objects) if options.get('selectedOnly') else None
+			with source_collection_view(sourceCollection, chosen) as (source_view, anchor_name):
+				view_options = dict(options, targetCollection=source_view.name)
+				result = exportREMeshFile(filePath, view_options)
+				if result:
+					options['_sf6HybridReport'] = view_options['_sf6HybridReport']
+					options['_sf6HybridReport']['automatic_source_collection'] = anchor_name
+					bpy.context.scene['REMeshLastExportedCollection'] = sourceCollection.name
+				return result
 		selected_objects = tuple(bpy.context.selected_objects) if options.get('selectedOnly') else None
 		if selected_objects is not None and not any(
 				obj in selected_objects and obj.type == 'MESH' and
-				not obj.get('~TYPE') and not obj.get('MeshExportExclude')
+				not obj.get('~TYPE')
 				for obj in sourceCollection.all_objects):
 			raise ValueError('No selected source mesh objects in the target collection.')
 		if options.get('rotate90', True) != sourceCollection.get('SF6SourceRotate'):
@@ -1331,13 +1356,47 @@ def exportREMeshFile(filePath,options):
 			raise ValueError('Embedded SF6 source could not be decoded.') from error
 		if hashlib.sha256(source_bytes).hexdigest() != sourceCollection.get('SF6SourceSHA256'):
 			raise ValueError('Embedded SF6 source hash mismatch')
+		# Automatic mixed-object normalization owns temporary data only. The
+		# recursive call uses the existing evaluated/atomic writer unchanged.
+		from .sf6_auto_hybrid import needs_automatic, automatic_collection
+		if not sourceCollection.get('SF6AutomaticHybrid'):
+			auto_source = SourceMesh(source_bytes)
+			from .sf6_hybrid import _explicit_source_exclusions, _parts_by_key
+			if selected_objects is None:
+				_explicit_source_exclusions(sourceCollection, auto_source, sourceCollection['SF6SourceSHA256'], _parts_by_key(auto_source))
+			if needs_automatic(sourceCollection, auto_source, sourceCollection['SF6SourceSHA256'], selected_objects):
+				with automatic_collection(sourceCollection, auto_source, sourceCollection['SF6SourceSHA256'], selected_objects) as (prepared, prepared_selected, auto_report):
+					auto_options = dict(options, targetCollection=prepared.name, selectedOnly=False, useBlenderMaterialName=False)
+					result = exportREMeshFile(filePath, auto_options)
+					if result:
+						report = auto_options['_sf6HybridReport']
+						report['automatic_mixed_geometry'] = auto_report
+						report['selected_only'] = bool(options.get('selectedOnly'))
+						options['_sf6HybridReport'] = report
+						bpy.context.scene['REMeshLastExportedCollection'] = sourceCollection.name
+					return result
 		# Reject stale part identities before allocating/evaluating private meshes.
-		from .sf6_hybrid import _parts_by_key
+		from .sf6_hybrid import _parts_by_key, _explicit_source_exclusions
+		progress_stage("Validating compatible source shapes and mixed geometry", 8)
 		original_source = SourceMesh(source_bytes)
-		_scene_objects(sourceCollection, original_source,
-					   sourceCollection['SF6SourceSHA256'],
-					   _parts_by_key(original_source),
-					   None if selected_objects is None else set(selected_objects))
+		original_parts = _parts_by_key(original_source)
+		excluded_keys = (_explicit_source_exclusions(sourceCollection, original_source,
+				sourceCollection['SF6SourceSHA256'], original_parts)
+				if selected_objects is None else set())
+		scene_objects, donor_parts = _scene_objects(sourceCollection, original_source,
+					   sourceCollection['SF6SourceSHA256'], original_parts,
+					   None if selected_objects is None else set(selected_objects),
+					   allowed_omissions=excluded_keys)
+		omitted_keys = (original_parts.keys() - scene_objects.keys()) & excluded_keys
+		if sourceCollection.get('SF6AutomaticHybrid'):
+			selected_objects = tuple(scene_objects.values())
+		if omitted_keys:
+			# Reuse the validated selected-subset pipeline; never silently relax
+			# identity checks or fabricate corrective data for removed geometry.
+			selected_objects = tuple(scene_objects.values())
+		if selected_objects is not None and donor_parts and len(donor_parts) == len(scene_objects):
+			reason = 'Only donor parts remain after exclusions' if omitted_keys else 'Only donor parts selected'
+			raise ValueError(reason + ': hybrid export needs compatible target-source geometry with deformation data. Include the target parts you want to preserve, or use ordinary export and check material names.')
 		output_dir = os.path.dirname(os.path.abspath(filePath))
 		if not os.path.isdir(output_dir):
 			raise ValueError('Choose an existing output directory for SF6 hybrid export.')
@@ -1359,20 +1418,32 @@ def exportREMeshFile(filePath,options):
 			if options.get('splitLoopVertices', True):
 				print('SF6 hybrid export uses shared evaluated rows; ordinary corner splitting is disabled.')
 			ordinary_options.pop('_sf6HybridReport', None)
+			if any(o.get("SF6HybridDonorSlotV1") is not None for o in sourceCollection.all_objects):
+				ordinary_options["useBlenderMaterialName"] = False
+			progress_stage("Evaluating private geometry and corrective keys", 15)
 			with evaluated_hybrid_collection(sourceCollection, selected_objects,
 					preserve_sharp_edges=bool(options.get('preserveSharpEdges', False))) as (
 					evaluated_collection, evaluated_selected, evaluation_report):
 				ordinary_options['targetCollection'] = evaluated_collection.name
+				ordinary_options["preserveMaterialTable"] = False
+				progress_stage("Rebuilding staged LOD0 mesh", 45)
 				if not exportREMeshFile(ordinary_path, ordinary_options):
 					raise ValueError('Ordinary LOD0 rebuild failed; the destination was not changed.')
 				with open(ordinary_path, 'rb') as ordinary_file:
 					ordinary_bytes = ordinary_file.read()
+				progress_stage("Rebuilding and verifying deformation tables", 60)
 				hybrid_bytes, report = build_hybrid_mesh(
 					source_bytes, ordinary_bytes, evaluated_collection,
 					selected_objects=evaluated_selected)
 				report['evaluated_geometry'] = evaluation_report
+				if omitted_keys:
+					report['selected_only'] = bool(options.get('selectedOnly'))
+					report['explicitly_excluded_parts'] = [
+						{'group': group, 'material': material}
+						for group, material in sorted(omitted_keys)]
 			if not isinstance(hybrid_bytes, bytes) or not hybrid_bytes.startswith(b'MESH'):
 				raise ValueError('SF6 hybrid builder returned an invalid mesh.')
+			progress_stage("Writing verified hybrid output", 97)
 			with open(staged_output, 'wb') as hybrid_file:
 				hybrid_file.write(hybrid_bytes)
 				hybrid_file.flush()
@@ -1502,6 +1573,7 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 		
 	#print(targetCollection)
 	
+	originalMaterialTable = decode_table(targetCollection.get(MATERIAL_TABLE_KEY)) if options.get("preserveMaterialTable", False) else None
 	meshLODCollectionList = []
 	addedMaterialsSet = set()
 	dg = bpy.context.evaluated_depsgraph_get()
@@ -1547,7 +1619,7 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 	if armatureObj != None:
 		print(f"Armature: {armatureObj.name}")
 		parsedMesh.skeleton = Skeleton()
-		exportArmatureData = armatureObj.data.copy()
+		exportArmatureData = track_armature(armatureObj.data.copy())
 		if options["rotate90"]:
 			transform = rotateNeg90Matrix @ armatureObj.matrix_world
 		else:
@@ -1729,7 +1801,7 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 				for obj in collection.objects
 				if (
 					obj.type == "MESH"
-					and not obj.get("MeshExportExclude")
+					and not obj.get("~TYPE")
 					and (
 						not options["selectedOnly"]
 						or obj in bpy.context.selected_objects
@@ -1766,9 +1838,8 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 	for lodIndex, lod in enumerate(meshLODCollectionList):
 		print(f"LOD {lodIndex} collection:{lod.name}")
 		parsedLODLevel = LODLevel()
-		if lod.get("LOD Distance") == None:
-			lod["LOD Distance"] = 0.167932*(lodIndex+1)#Player model LOD distance, maybe calculate from a bounding box instead
-		parsedLODLevel.lodDistance = lod["LOD Distance"]
+		# Default only the exported value; do not mutate the user's collection.
+		parsedLODLevel.lodDistance = lod.get("LOD Distance", 0.167932*(lodIndex+1))
 		
 		#Store all groups as a key in dictionary with submesh list as value
 		visconDict = dict()
@@ -1783,9 +1854,9 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 				selected = True
 			
 				
-			if obj.type == "MESH" and not obj.get("MeshExportExclude") and selected:
+			if obj.type == "MESH" and not obj.get("~TYPE") and selected:
 				subMeshCount += 1
-				cloneObj = obj.copy()
+				cloneObj = track_object(obj.copy())
 				#Get copy of sub mesh with modifiers applied
 				#Creates copy of object so that solve repeated uvs and sharp edge splitting can be done and not affect the original mesh
 				cloneObj.name ="CLN_" + obj.name
@@ -1813,7 +1884,8 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 					cloneObj.data = bpy.data.meshes.new_from_object(
 						obj.evaluated_get(dg)
 					)
-				clonedMeshCollection = getCollection("clonedMeshes")
+				track_mesh(cloneObj.data)
+				clonedMeshCollection = temporary_collection()
 				clonedMeshCollection.objects.link(cloneObj)
 				
 				print(f"Created temporary clone of {obj.name}: {cloneObj.name}")
@@ -2576,13 +2648,7 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 	#Clear references
 	newMeshDataList.clear()
 	evaluatedSubMeshData = None
-	if exportArmatureData != None:
-		bpy.data.armatures.remove(exportArmatureData)
-	for mesh in deleteCopiedMeshList:
-		bpy.data.objects.remove(mesh,do_unlink = True)
-		#bpy.data.meshes.remove(mesh)
-	if "clonedMeshes" in bpy.data.collections:
-		bpy.data.collections.remove(bpy.data.collections["clonedMeshes"])
+	# The resource scope owns clones and cleans them on success or exceptions.
 	deleteCopiedMeshList.clear()
 	cloneMeshNameDict.clear()
 	#print(remapDict)
@@ -2610,10 +2676,16 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 				parsedMesh.skeleton.weightedBones[index] = hashedBoneNameDict[boneName]
 		
 	
+	if originalMaterialTable is not None:
+		newMaterials = preserve_table(parsedMesh, originalMaterialTable)
+		if newMaterials:
+			raiseWarning("New material slots appended; update the matching MDF: " + ", ".join(newMaterials))
 	meshWriteStartTime = time.time()
+	progress_stage("Serializing rebuilt mesh buffers", 90)
 	reMesh = ParsedREMeshToREMesh(parsedMesh, meshVersion, normalizeWeights=options.get("normalizeWeights", True))
 	if targetCollection != None:
 		reMesh.fileHeader.lodGroupNameHash = int(targetCollection.get("LODGroupNameHash","0"))
+	progress_stage("Writing rebuilt mesh", 97)
 	writeREMesh(reMesh, filePath)
 	meshWriteEndTime = time.time()
 	meshWriteExportTime =  meshWriteEndTime - meshWriteStartTime

@@ -82,13 +82,12 @@ def ReadNorTanBuffer(norTanBuffer,tags):
 	return (normalList, tangentList, normalGroupList)
 
 def ReadUVBuffer(uvBuffer,tags):
-	#uvArray = np.frombuffer(uvBuffer,dtype="<2e",)
-	uvArray = np.frombuffer(bytearray(uvBuffer),dtype="<e",)#Convert bytes to bytearray to make numpy array mutable
-	#Do (1-x) to v value
-	uvArray[1::2] *= -1
-	uvArray[1::2] += 1
-	uvArray = uvArray.reshape((-1,2))
-	return uvArray.tolist()
+	# Decode half precision, then promote BEFORE flipping V.
+	# Arithmetic in float16 destroys fine UV/UV2 coordinates near V=0 or 1.
+	uvArray = np.frombuffer(uvBuffer,dtype="<e").astype(np.float64)
+	uvArray[1::2] = 1.0 - uvArray[1::2]
+	return uvArray.reshape((-1,2)).tolist()
+
 
 def ReadWeightBuffer(weightBuffer,tags):
 	#weightArray = np.frombuffer(weightBuffer,dtype=f"<{stride//2}B")
@@ -196,6 +195,7 @@ BufferReadDict = {
 	"NorTan":ReadNorTanBuffer,
 	"UV":ReadUVBuffer,
 	"UV2":ReadUVBuffer,
+	"UV3":ReadUVBuffer,
 	"Weight":ReadWeightBuffer,
 	"Color":ReadColorBuffer,
 	"SF6UnknownVertexDataType":ReadColorBuffer,#Read as color data for now until what it is can be determined
@@ -252,6 +252,7 @@ def ReadVertexElementBuffers(vertexElementList,vertexBuffer,tagSet):
 		"NorTan":None,
 		"UV":None,
 		"UV2":None,
+		"UV3":None,
 		"Weight":None,
 		"Color":None,
 		"SF6UnknownVertexDataType":None,
@@ -266,7 +267,9 @@ def ReadVertexElementBuffers(vertexElementList,vertexBuffer,tagSet):
 			bufferEnd = vertexElementList[index].posStartOffset + (vertexElement.stride * len(vertexDict["Position"]))
 		else:
 			bufferEnd = vertexElementList[index+1].posStartOffset
-		elementName = typeNameMapping[vertexElement.typing]
+		elementName = "UV3" if vertexElement.typing == 6 and "RE9UV3" in tagSet else typeNameMapping[vertexElement.typing]
+		if elementName == "UV3" and vertexElement.stride != 4:
+			raise ValueError("Unsupported RE9 UV3 stride: " + str(vertexElement.stride))
 		#print(f"{elementName} start {str(vertexElement.posStartOffset)} end {str(bufferEnd)} size {str(bufferEnd-vertexElement.posStartOffset)}")
 		#print(elementName)
 
@@ -326,6 +329,7 @@ class SubMesh:
 		self.normalPivot255List = []
 		self.uvList = []
 		self.uv2List = []
+		self.uv3List = []
 		self.faceList = []
 		self.weightList = []
 		self.weightIndicesList = []
@@ -436,6 +440,8 @@ def _parseLODStructureWithoutBlendShapes(
 					submesh.uvList = vertexDict["UV"][start:bufferEnd]
 				if vertexDict["UV2"] is not None:
 					submesh.uv2List = vertexDict["UV2"][start:bufferEnd]
+				if vertexDict["UV3"] is not None:
+					submesh.uv3List = vertexDict["UV3"][start:bufferEnd]
 				if vertexDict["Weight"] is not None:
 					submesh.weightIndicesList = vertexDict["Weight"][0][start:bufferEnd]
 					submesh.weightList = vertexDict["Weight"][1][start:bufferEnd]
@@ -737,6 +743,7 @@ def _parseLODStructureWithBlendShapes(
 				for field, destination in (
 					("UV", "uvList"),
 					("UV2", "uv2List"),
+					("UV3", "uv3List"),
 					("Color", "colorList"),
 				):
 					if vertexDict[field] is not None:
@@ -1051,6 +1058,8 @@ class ParsedREMesh:
 		#Parse Vertex Buffer
 		if reMesh.meshBufferHeader != None:
 			tags = set()
+			if reMesh.meshVersion == VERSION_RE9:
+				tags.add("RE9UV3")
 			if reMesh.meshVersion in SIX_WEIGHT_MESH_VERSIONS or reMesh.fileHeader.version == 250707828:#Street Fighter 6 mesh version + MH Wilds, #Pragmata internal mesh version uses 6 weight but RE9 uses 8
 				tags.add("SixWeightCompressed")#Add tag to parse compressed weights
 			if reMesh.meshVersion == VERSION_ONIWOTS:

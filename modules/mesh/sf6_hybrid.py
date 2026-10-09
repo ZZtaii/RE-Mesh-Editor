@@ -18,6 +18,7 @@ import zlib
 import numpy as np
 
 from . import sf6_source
+from .operation_progress import stage as progress_stage
 
 
 _SOURCE_KEY_ROUNDING_TOLERANCE = 2e-5
@@ -108,17 +109,33 @@ def _part_shapes(source, part):
     return result
 
 
-def _scene_objects(collection, source, source_hash, source_parts, selected=None):
+def _explicit_source_exclusions(collection, source, source_hash, source_parts):
+    """Legacy API retained internally; object exclusion flags are no longer used."""
+    return set()
+
+
+def _scene_objects(collection, source, source_hash, source_parts, selected=None,
+                   allowed_omissions=()):
     objects = {}
     no_source = set()
     for obj in collection.all_objects:
-        if obj.type != 'MESH' or obj.get('~TYPE') or obj.get('MeshExportExclude'):
+        if obj.type != 'MESH' or obj.get('~TYPE'):
             continue
         if selected is not None and obj not in selected:
             continue
         _need(obj.mode == 'OBJECT', 'leave Edit Mode before exporting ' + obj.name)
         raw = obj.get('SF6SourceMeta')
-        if raw is None and obj.get('SF6SourceSHA256') is None:
+        if collection.get('SF6AutomaticHybrid') and obj.get('SF6AutomaticOrdinaryPart'):
+            match = re.fullmatch(r'Group_(\d+)_Sub_(\d+)__(.+?)(?:\.\d{3})?', obj.name)
+            _need(match is not None, 'invalid automatic part name: '+obj.name)
+            key = int(match[1]), match[3]
+            no_source.add(key)
+        elif obj.get('SF6HybridDonorSlotV1') is not None:
+            from .sf6_hybrid_donor import slot_for
+            part, donor_slot = slot_for(obj, collection, source)
+            key = _part_key(source, part)
+            no_source.add(key)
+        elif raw is None and obj.get('SF6SourceSHA256') is None:
             # A replacement object can lack any retail metadata.  The exact
             # importer-style name is the only safe bridge to an ordinary part.
             match = re.fullmatch(r'Group_(\d+)_Sub_(\d+)__(.+?)(?:\.\d{3})?', obj.name)
@@ -133,7 +150,7 @@ def _scene_objects(collection, source, source_hash, source_parts, selected=None)
             no_source.add(key)
         else:
             _need(raw is not None and obj.get('SF6SourceSHA256') == source_hash,
-                  'stale or incomplete source identity on ' + obj.name)
+                  'stale or incomplete source identity on ' + obj.name + '. Bind mixed geometry to the target rig and retain its preserved source collection.')
             try:
                 part = json.loads(raw)
             except (ValueError, TypeError) as exc:
@@ -142,12 +159,15 @@ def _scene_objects(collection, source, source_hash, source_parts, selected=None)
             if part['lod'] != 0:
                 continue
             key = _part_key(source, part)
-        _need(key in source_parts and key not in objects,
+        _need((key in source_parts or (collection.get('SF6AutomaticHybrid') and obj.get('SF6AutomaticOrdinaryPart'))) and key not in objects,
               'duplicated or unexpected source object ' + obj.name)
         objects[key] = obj
     if selected is None:
-        _need(objects.keys() == source_parts.keys(),
-              'LOD0 source objects changed; hybrid export needs one object per source part')
+        missing = source_parts.keys() - objects.keys()
+        _need(collection.get('SF6AutomaticHybrid') or not (missing - set(allowed_omissions)),
+              'LOD0 source objects changed; hybrid export needs one object per source part. '
+              'Use Selected Objects Only to export a subset.')
+        _need(objects, 'no exportable LOD0 meshes remain after exclusions')
     else:
         _need(objects, 'no selected LOD0 source meshes in the target collection')
     return objects, no_source
@@ -521,6 +541,15 @@ def _build_shape_table(source, ordinary, source_parts, ordinary_parts,
     _need(target_parts | extra_parts == set(source_parts),
           'shape target/extra descriptors do not cover all parts')
 
+    added_ranges=[(ordinary_parts[key]['start'],0,ordinary_parts[key]['count'],0)
+                  for key in sorted(ordinary_parts.keys()-source_parts.keys())]
+    for offset in range(0,len(added_ranges),255):
+        ranges=added_ranges[offset:offset+255]
+        range_ptr=_append(out,b''.join(struct.pack('<IIII',*r) for r in ranges))
+        records.append(struct.pack('<HHHBBQ',0,0,0,len(ranges),0,range_ptr))
+        output_extra_count+=1
+    _need(output_extra_count<=65535,'too many zero-shape descriptors')
+
     total_vertices = sum(part['count'] for part in ordinary_parts.values())
     target_coverage = np.zeros(total_vertices, bool)
     extra_coverage = np.zeros(total_vertices, np.uint8)
@@ -778,6 +807,17 @@ def _normal_table(source, candidate, source_parts, candidate_parts, mapped, obje
             vertex[new_vbase:new_vbase + new['count']] = new_v
             faces[new_fbase:new_fbase + _padded_indices(new)] = new_f
             regenerated_parts.append(key)
+    for key in candidate_parts.keys()-source_parts.keys():
+        new=candidate_parts[key]
+        vb=new['start']-new_first['start'];fb=new['face_start']-new_first['face_start']
+        _need(0<=vb and vb+new['count']<=total_vertices and 0<=fb and fb+_padded_indices(new)<=total_indices,
+              'added part normal allocation out of bounds')
+        _need(not used_vertex[vb:vb+new['count']].any() and not used_index[fb:fb+_padded_indices(new)].any(),
+              'added part normal allocation overlap')
+        nv,nf=_synthesize_normals(candidate,new,new_first['start']);_validate_palette(nf,new)
+        vertex[vb:vb+new['count']]=nv;faces[fb:fb+_padded_indices(new)]=nf
+        used_vertex[vb:vb+new['count']]=True;used_index[fb:fb+_padded_indices(new)]=True
+        regenerated_parts.append(key)
     _need(used_vertex.all() and used_index.all(), 'normal table has allocation gaps')
     _need(np.all((vertex & 0x7fffffff) < total_vertices),
           'normal vertex reference out of range')
@@ -863,6 +903,11 @@ def _verify_result(source, ordinary, result, source_parts, ordinary_parts,
             _need(np.array_equal(output_shapes[name], desired),
                   'shape deltas differ from verified source or transferred keys: ' +
                   repr(key) + '/' + name)
+    for key in ordinary_parts.keys()-source_parts.keys():
+        new=ordinary_parts[key]
+        actual=next(p for p in final.parts if _part_key(final,p)==key)
+        _need(np.array_equal(ordinary.faces(new),final.faces(actual)), 'added part triangles changed')
+        _need(not list(final.part_shapes(actual)), 'unverified added part received shape links')
     header = _read(result, 'Q', 56)[0]
     _need(header != 0 and _read(result, 'Q', header)[0] == 1,
           'hybrid normal table missing')
@@ -916,14 +961,15 @@ def build_hybrid_mesh(source_bytes, ordinary_bytes, collection, selected_objects
         # rewrite, then use stable group/material identities in the subset.
         objects, no_source = _scene_objects(
             collection, original, source_hash, original_parts, selected)
-    placeholders = {key for key, obj in objects.items() if sf6_source._is_hip_stub(obj)}
+    extra_keys = {key for key,obj in objects.items() if obj.get('SF6AutomaticOrdinaryPart')}
+    placeholders = {key for key, obj in objects.items() if key not in extra_keys and sf6_source._is_hip_stub(obj)}
     excluded_shapes = {original_parts[key]['start'] for key in placeholders
                        if list(original.part_shapes(original_parts[key]))}
-    if selected is None and not excluded_shapes:
+    if selected is None and not excluded_shapes and not extra_keys:
         source = original
     else:
         from .sf6_source_subset import compact_source_subset
-        included = {original_parts[key]['start'] for key in objects}
+        included = {original_parts[key]['start'] for key in objects if key not in extra_keys}
         source = sf6_source.SourceMesh(bytes(compact_source_subset(
             source_bytes, original, included, all_lods=False,
             shape_excluded_starts=excluded_shapes)))
@@ -939,16 +985,17 @@ def build_hybrid_mesh(source_bytes, ordinary_bytes, collection, selected_objects
           'ordinary input already has a normal recalculation table')
     source_parts = _parts_by_key(source)
     ordinary_parts = _parts_by_key(ordinary)
-    _need(source_parts.keys() == ordinary_parts.keys(),
+    _need(set(source_parts) | extra_keys == set(ordinary_parts),
           'ordinary output does not have the same unique LOD0 part identities')
-    _need(source_parts.keys() == objects.keys(),
+    _need(set(source_parts) | extra_keys == set(objects),
           'selected source parts differ from selected scene objects')
     rotate = collection['SF6SourceRotate']
     mapped = {}
     transferred = {}
     edited = {}
     parts_report = []
-    for key, old in source_parts.items():
+    for index, (key, old) in enumerate(source_parts.items()):
+        progress_stage(f"Checking hybrid part {index+1}/{len(source_parts)}: {key}", 60+15*index/max(1,len(source_parts)))
         report, vertices, faces, shape_deltas, edited_shapes = _analyze_part(
             source, ordinary, old, ordinary_parts[key], objects[key], rotate,
             no_source=key in no_source, placeholder=key in placeholders)
@@ -957,6 +1004,21 @@ def build_hybrid_mesh(source_bytes, ordinary_bytes, collection, selected_objects
         edited[key] = edited_shapes
         parts_report.append(report)
 
+    for key in sorted(extra_keys):
+        new=ordinary_parts[key]
+        _need(len(objects[key].data.vertices)==new['count'], 'automatic geometry vertex count differs')
+        expected=sf6_source._from_blender(_world_coords(objects[key],_coords(objects[key].data.vertices)),rotate)
+        _need(np.isfinite(expected).all() and np.max(np.abs(expected-ordinary.positions(new)),initial=0)<=1e-5,
+              'automatic geometry positions differ from evaluated object')
+        _need(np.array_equal(ordinary.faces(new), np.array([p.vertices[:] for p in objects[key].data.polygons])),
+              'automatic geometry triangle order differs')
+        mapped[key]=({},{});transferred[key]={};edited[key]={}
+        parts_report.append({'group':key[0],'material':key[1],'status':'ordinary_added',
+            'source_vertices':0,'rebuilt_vertices':new['count'],'source_triangles':0,
+            'rebuilt_triangles':new['faces'],'shape_links':0,'transferred_vertices':0,
+            'transferred_shape_delta_entries':0,'zero_delta_vertices':0})
+
+    progress_stage("Building corrective-shape tables", 80)
     out = bytearray(ordinary_bytes)
     if source.blend_offset:
         (delta, shape_count, targets, extras, preserved_entries,
@@ -976,10 +1038,12 @@ def build_hybrid_mesh(source_bytes, ordinary_bytes, collection, selected_objects
     for part in parts_report:
         part['edited_source_shape_delta_entries'] = edited_by_part.get(
             (part['group'], part['material']), 0)
+    progress_stage("Building normal-recalculation tables", 88)
     normal_vertex, normal_face, copied, rebuilt, stub_exceptions = _normal_table(
         source, shaped, source_parts, ordinary_parts, mapped, objects)
     _append_normal_table(shaped, out, normal_vertex, normal_face)
     result = bytes(out)
+    progress_stage("Verifying final hybrid buffers", 94)
     _verify_result(source, ordinary, result, source_parts, ordinary_parts,
                    mapped, transferred, edited, shape_count, normal_vertex, normal_face)
     source_bones = _bone_names(source)
