@@ -2138,6 +2138,9 @@ def ParsedREMeshToREMesh(parsedMesh,meshVersion,normalizeWeights=True):
 	norTanBuffer = BytesIO()
 	UVBuffer = BytesIO()
 	UV2Buffer = BytesIO()
+	UV3Buffer = BytesIO()
+	if getattr(parsedMesh, "bufferHasUV3", False) and version != VERSION_RE9:
+		raise ValueError("A third UV buffer is only supported for the RE9 mesh layout.")
 	weightBuffer = BytesIO()
 	colorBuffer = BytesIO()
 	faceBuffer = BytesIO()
@@ -2179,7 +2182,9 @@ def ParsedREMeshToREMesh(parsedMesh,meshVersion,normalizeWeights=True):
 			reMesh.lodHeader.skinWeightCount = 27#
 		elif version == VERSION_RE9:
 			reMesh.lodHeader.skinWeightCount = 18#
-		if parsedMesh.bufferHasUV2:#This is wrong, uv count is determined by something else. However uv count is unused by the game so it doesn't really matter
+		if version == VERSION_RE9 and getattr(parsedMesh, "bufferHasUV3", False):
+			reMesh.lodHeader.uvCount = 3
+		elif parsedMesh.bufferHasUV2:#This is wrong, uv count is determined by something else. However uv count is unused by the game so it doesn't really matter
 			reMesh.lodHeader.uvCount = 2
 		else:
 			reMesh.lodHeader.uvCount = 1
@@ -2244,6 +2249,11 @@ def ParsedREMeshToREMesh(parsedMesh,meshVersion,normalizeWeights=True):
 						WriteToUVBuffer(UVBuffer,parsedSubMesh.uvList)
 						if parsedSubMesh.uv2List is not None:
 							WriteToUVBuffer(UV2Buffer,parsedSubMesh.uv2List)
+						if getattr(parsedMesh, "bufferHasUV3", False):
+							thirdUV = getattr(parsedSubMesh, "uv3List", None)
+							if thirdUV is None or len(thirdUV) == 0:
+								thirdUV = parsedSubMesh.uvList
+							WriteToUVBuffer(UV3Buffer, thirdUV)
 						
 						if len(parsedSubMesh.weightIndicesList) != 0 and len(parsedSubMesh.weightIndicesList) == len(parsedSubMesh.weightList):
 							if parsedMesh.bufferHasExtraWeight and len(parsedSubMesh.extraWeightIndicesList) != 0 and len(parsedSubMesh.extraWeightIndicesList) == len(parsedSubMesh.extraWeightList):
@@ -2357,6 +2367,11 @@ def ParsedREMeshToREMesh(parsedMesh,meshVersion,normalizeWeights=True):
 						WriteToUVBuffer(UVBuffer,parsedSubMesh.uvList)
 						if parsedSubMesh.uv2List != []:
 							WriteToUVBuffer(UV2Buffer,parsedSubMesh.uv2List)
+						if getattr(parsedMesh, "bufferHasUV3", False):
+							thirdUV = getattr(parsedSubMesh, "uv3List", None)
+							if thirdUV is None or len(thirdUV) == 0:
+								thirdUV = parsedSubMesh.uvList
+							WriteToUVBuffer(UV3Buffer, thirdUV)
 						if parsedSubMesh.weightIndicesList != [] and parsedSubMesh.weightList != []:
 							WriteToWeightBuffer(weightBuffer,parsedSubMesh.weightList,parsedSubMesh.weightIndicesList,False,normalizeWeights)
 						if parsedSubMesh.colorList != []:
@@ -2539,6 +2554,15 @@ def ParsedREMeshToREMesh(parsedMesh,meshVersion,normalizeWeights=True):
 		reMesh.meshBufferHeader.vertexElementList.append(vertexElement)
 		reMesh.meshBufferHeader.vertexBuffer.extend(colorBuffer.getvalue())
 
+	if UV3Buffer.tell() != 0:
+		vertexElement = VertexElementStruct()
+		vertexElement.posStartOffset = currentBufferOffset
+		vertexElement.typing = 6
+		vertexElement.stride = 4
+		currentBufferOffset += UV3Buffer.tell()
+		reMesh.meshBufferHeader.vertexElementList.append(vertexElement)
+		reMesh.meshBufferHeader.vertexBuffer.extend(UV3Buffer.getvalue())
+
 	if extraWeightBuffer.tell() != 0:
 		vertexElement = VertexElementStruct()
 		vertexElement.posStartOffset = currentBufferOffset
@@ -2615,6 +2639,7 @@ def ParsedREMeshToREMesh(parsedMesh,meshVersion,normalizeWeights=True):
 	norTanBuffer.close()
 	UVBuffer.close()
 	UV2Buffer.close()
+	UV3Buffer.close()
 	weightBuffer.close()
 	colorBuffer.close()
 	extraWeightBuffer.close()

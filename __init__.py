@@ -1,6 +1,6 @@
 #Author: NSA Cloud
 bl_info = {
-	"name": "RE Mesh Editor (Local Test v7 2026-10-09)",
+	"name": "RE Mesh Editor (Local Test v8 2026-10-10)",
 	"author": "ZZtaii",
 	"version": (0, 68),
 	"blender": (4, 3, 2),
@@ -1202,6 +1202,9 @@ class ExportREMesh(Operator, ExportHelper):
 			layout.prop(self, "exportBlendShapes", text="SF6: Preserve Source Data")
 		elif self.filename_ext == ".241111606":
 			layout.prop(self, "shapeKeyExportMode", text="Export Shape Keys")
+		elif self.filename_ext == ".250925211":
+			layout.label(text="RE9: ordinary mesh export", icon="INFO")
+			layout.label(text="Source / shape preservation unavailable")
 		if self.filename_ext == ".230110883":
 			row = layout.row()
 			from .modules.mesh.sf6_auto_hybrid import has_shape_geometry

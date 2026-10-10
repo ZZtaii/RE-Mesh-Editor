@@ -1151,21 +1151,14 @@ def importREMeshFile(filePath,options):
 	return (warningList,errorList)
 
 def checkObjForUVDoubling(obj):
-	hasUVDoubling = False
-	UVPoints = dict()
-	if len(obj.data.uv_layers) > 0:
+	for layer in obj.data.uv_layers:
+		points = {}
 		for loop in obj.data.loops:
-			currentVertIndex = loop.vertex_index
-			#Vertex UV
-			uv = obj.data.uv_layers[0].data[loop.index].uv
-			
-			if currentVertIndex in UVPoints and UVPoints[currentVertIndex] != uv:
-				hasUVDoubling = True
-				break
-				#raise Exception
-			else:
-				UVPoints[currentVertIndex] = uv
-	return hasUVDoubling
+			uv = tuple(layer.data[loop.index].uv)
+			if loop.vertex_index in points and points[loop.vertex_index] != uv:
+				return True
+			points[loop.vertex_index] = uv
+	return False
 
 #RE Toolbox Solve Repeated UVs
 
@@ -1874,7 +1867,7 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 						obj.data.update()
 						bpy.context.view_layer.update()
 						cloneObj.data = bpy.data.meshes.new_from_object(
-							obj.evaluated_get(dg)
+							obj.evaluated_get(dg), preserve_all_data_layers=True, depsgraph=dg
 						)
 					finally:
 						_restore_shape_key_values(storedShapeValues)
@@ -1882,9 +1875,11 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 						bpy.context.view_layer.update()
 				else:
 					cloneObj.data = bpy.data.meshes.new_from_object(
-						obj.evaluated_get(dg)
+						obj.evaluated_get(dg), preserve_all_data_layers=True, depsgraph=dg
 					)
 				track_mesh(cloneObj.data)
+				if len(cloneObj.data.uv_layers) < len(obj.data.uv_layers):
+					raise ValueError(f"{obj.name}: the evaluated modifier stack removed UV maps ({len(obj.data.uv_layers)} before, {len(cloneObj.data.uv_layers)} after). Disable the destructive modifier or transfer/reproject UVs onto its result before exporting. The source mesh and existing output were retained.")
 				clonedMeshCollection = temporary_collection()
 				clonedMeshCollection.objects.link(cloneObj)
 				
@@ -2105,6 +2100,20 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 				if meshHasUV2:
 					parsedMesh.bufferHasUV2 = True
 
+				# RE9 type 6 is UV3. Other supported writers expose only UV0/UV1.
+				uvLimit = 3 if gameName == "RE9" else 2
+				if len(evaluatedSubMeshData.uv_layers) > uvLimit:
+					raise ValueError(f"{rawsubmesh.name}: {len(evaluatedSubMeshData.uv_layers)} UV maps would be truncated. {gameName or 'This target'} export supports {uvLimit}. Keep only the intended export UV maps on a duplicate mesh; the source and destination were not changed.")
+				for uvLayer in evaluatedSubMeshData.uv_layers:
+					uvValues = np.empty((len(uvLayer.data), 2), dtype=np.float64)
+					uvLayer.data.foreach_get('uv', uvValues.ravel())
+					uvValues[:, 1] = 1.0 - uvValues[:, 1]
+					if not np.isfinite(uvValues).all() or np.any(np.abs(uvValues) > 65504):
+						raise ValueError(f"{rawsubmesh.name}: UV map '{uvLayer.name}' contains non-finite or out-of-range values for the mesh UV format. Correct the UVs before exporting.")
+				meshHasUV3 = len(evaluatedSubMeshData.uv_layers) > 2
+				if meshHasUV3:
+					parsedMesh.bufferHasUV3 = True
+
 				meshHasColor = len(evaluatedSubMeshData.vertex_colors) > 0
 				if meshHasColor:
 					parsedMesh.bufferHasColor = True
@@ -2222,6 +2231,7 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 					outTangents = []
 					outUV0 = []
 					outUV1 = []
+					outUV2 = []
 					outColors = []
 
 					outWeights = []
@@ -2257,10 +2267,11 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 
 							uv0 = evaluatedSubMeshData.uv_layers[0].data[loopIndex].uv.copy() if meshHasUV else None
 							uv1 = evaluatedSubMeshData.uv_layers[1].data[loopIndex].uv.copy() if meshHasUV2 else None
+							uv2 = evaluatedSubMeshData.uv_layers[2].data[loopIndex].uv.copy() if meshHasUV3 else None
 							color = evaluatedSubMeshData.vertex_colors[0].data[loopIndex].color if meshHasColor else None
 
 							# Splitting if the loop normal, UV, tangent, or color attrib. is different.
-							exportKey = (srcVertIndex,	_round_tuple(normal), tangentPacked, _round_tuple(uv0) if uv0 is not None else None, _round_tuple(uv1) if uv1 is not None else None, _round_tuple(color) if color is not None else None,)
+							exportKey = (srcVertIndex,	_round_tuple(normal), tangentPacked, tuple(uv0) if uv0 is not None else None, tuple(uv1) if uv1 is not None else None, tuple(uv2) if uv2 is not None else None, _round_tuple(color) if color is not None else None,)
 
 							if exportKey not in exportVertexMap:
 								newExportIndex = len(outPositions)
@@ -2276,6 +2287,9 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 
 								if meshHasUV2:
 									outUV1.append(tuple(uv1))
+
+								if meshHasUV3:
+									outUV2.append(tuple(uv2))
 
 								if meshHasColor:
 									outColors.append(tuple(color))
@@ -2317,6 +2331,8 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 						parsedSubMesh.uv2List = np.asarray(outUV1, dtype=np.float32)
 					else:
 						parsedSubMesh.uv2List = None
+
+					parsedSubMesh.uv3List = np.asarray(outUV2, dtype=np.float32) if meshHasUV3 else None
 
 					if meshHasColor:
 						parsedSubMesh.colorList = np.asarray(outColors, dtype=np.float32)
@@ -2398,6 +2414,8 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 					else:
 						parsedSubMesh.uv2List = None
 
+					parsedSubMesh.uv3List = np.zeros((legacyVertexCount, 2), dtype=np.float32) if meshHasUV3 else None
+
 					if meshHasColor:
 						parsedSubMesh.colorList = np.zeros((legacyVertexCount, 4), dtype=np.float32)
 					else:
@@ -2407,6 +2425,7 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 					previousIndex = -1
 					UVPoints = dict()
 					UV2Points = dict()
+					UV3Points = dict()
 					usedOriginalVertexIndices = set()
 
 					for loop in sortedLoops:
@@ -2430,6 +2449,14 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 								addErrorToDict(errorDict, "MultipleUVsAssignedToVertex", rawsubmesh.name)
 							else:
 								UV2Points[currentVertIndex] = uv2
+
+						if meshHasUV3:
+							uv3 = evaluatedSubMeshData.uv_layers[2].data[loop.index].uv
+							parsedSubMesh.uv3List[currentVertIndex] = uv3
+							if currentVertIndex in UV3Points and UV3Points[currentVertIndex] != uv3:
+								addErrorToDict(errorDict, "MultipleUVsAssignedToVertex", rawsubmesh.name)
+							else:
+								UV3Points[currentVertIndex] = uv3.copy()
 
 						if currentVertIndex == previousIndex:
 							continue

@@ -993,6 +993,7 @@ class ParsedREMesh:
 		self.bufferHasNorTan = False
 		self.bufferHasUV = False
 		self.bufferHasUV2 = False
+		self.bufferHasUV3 = False
 		self.bufferHasWeight = False
 		self.bufferHasColor = False
 		self.bufferHasIntFaces = False
