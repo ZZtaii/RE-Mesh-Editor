@@ -94,7 +94,7 @@ class WM_OT_ApplyMDFToMeshCollection(Operator):
 			mdfFile = buildMDF(mdfCollection.name)
 			meshMaterialDict = dict()
 			for obj in meshCollection.all_objects:
-				if obj.type == "MESH" and not obj.get("MeshExportExclude"):
+				if obj.type == "MESH" and not obj.get("~TYPE"):
 					materialName = None
 					#Fix UV map naming so materials work properly on non RE meshes
 					if len(obj.data.uv_layers) > 0:

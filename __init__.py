@@ -1,6 +1,6 @@
 #Author: NSA Cloud
 bl_info = {
-	"name": "RE Mesh Editor",
+	"name": "RE Mesh Editor (Local Test v8.1 2026-10-10)",
 	"author": "ZZtaii",
 	"version": (0, 68),
 	"blender": (4, 3, 2),
@@ -322,13 +322,13 @@ class ChunkPathPropertyGroup(bpy.types.PropertyGroup):
     path: StringProperty(
         name="Path",
 		subtype="DIR_PATH",
-		description = "Set the path to the natives\STM folder inside the extracted chunk files\nThis determines where textures will be imported from\n"+r"Example: I:\RE4_EXTRACT\re_chunk_000\natives\STM"
+		description = "Set the path to the natives\\STM folder inside the extracted chunk files\nThis determines where textures will be imported from\n"+r"Example: I:\RE4_EXTRACT\re_chunk_000\natives\STM"
     )
 
 
 class AddItemOperator(bpy.types.Operator):
 	bl_idname = "re_mesh.chunk_path_list_add_item"
-	bl_description = "Add path to the extracted chunk's natives\STM\ folder.\n"+r"Example: I:\RE4_EXTRACT\re_chunk_000\natives\STM"
+	bl_description = "Add path to the extracted chunk's natives\\STM\\ folder.\n"+r"Example: I:\RE4_EXTRACT\re_chunk_000\natives\STM"
 	bl_label = "Add Path"
 	
 
@@ -400,7 +400,7 @@ class REMeshPreferences(AddonPreferences):
 	)
 	showConsole: BoolProperty(
 		name="Show Console During Import/Export",
-		description = "When importing or exporting a file, the console will be opened so that progress can be viewed.\nNote that if the console is already opened before import or export, it will be closed instead.\n This is a limitation of Blender, there's no way to get the active state of the console window.",
+		description = "On Windows, show the system console during mesh import/export, including source-preserve and mod-folder export. An already visible console stays open. Failures leave it visible for diagnosis.",
 		default = True
 	)
 	textureCachePath: StringProperty(
@@ -646,7 +646,7 @@ class REMeshPreferences(AddonPreferences):
 			row.prop(self,"textureCachePath")
 			box.label(text="Texture cache path is very long.",icon = "ERROR")
 			box.label(text="File paths may exceed the max length of 255 characters and fail to convert.")
-			box.label(text="Consider changing this to a shorter path such as C:\REMeshTextureCache.")
+			box.label(text="Consider changing this to a shorter path such as C:\\REMeshTextureCache.")
 		else:
 			row.prop(self,"textureCachePath")
 		row = box.row()
@@ -897,11 +897,6 @@ class ImportREMesh(Operator, ImportHelper):
 		
 		bpy.context.scene["REMeshDefaultImportSettingsLoaded"] = 1
 		
-		if not bpy.app.background and bpy.context.preferences.addons[__name__].preferences.showConsole:
-			 try: 
-				 bpy.ops.wm.console_toggle()
-			 except:
-				 pass
 		
 		multiFileImport = len(self.files) > 1
 		hasImportErrors = False
@@ -938,11 +933,6 @@ class ImportREMesh(Operator, ImportHelper):
 			
 			
 		if not hasImportErrors:
-			if not bpy.app.background and bpy.context.preferences.addons[__name__].preferences.showConsole:
-				try: 
-					bpy.ops.wm.console_toggle()
-				except:
-					 pass
 				
 				
 			if not multiFileImport:
@@ -984,6 +974,17 @@ def update_targetMeshCollection(self,context):
 		#print(browserSpace.params.filename)
 		if ".mesh" in self.targetCollection:
 			browserSpace.params.filename = self.targetCollection.split(".mesh")[0]+".mesh" + self.filename_ext
+	if getattr(self, "_direct_export_dialog", False):
+		from .modules.mesh import direct_export_settings
+		if bpy.data.collections.get(self.targetCollection) is None:
+			return  # Do not reload fields while a collection name is incomplete.
+		# The old collection's full path must not survive a target switch.
+		# Keep the directory, choose the new mesh name, then allow only this
+		# collection's saved path to override it.
+		if ".mesh" in self.targetCollection:
+			self.filepath = os.path.join(os.path.dirname(self.filepath),
+				self.targetCollection.split(".mesh")[0] + ".mesh" + self.filename_ext)
+		direct_export_settings.load(self, context, restore_enabled=False)
 def getMeshExportDefaultWeightLimit(filenameExt):
 	try:
 		meshVersion = int(str(filenameExt).replace(".", ""))
@@ -994,6 +995,9 @@ def getMeshExportDefaultWeightLimit(filenameExt):
 
 def updateMeshExportWeightLimit(self, context):
 	self.limitTotalCount = getMeshExportDefaultWeightLimit(self.filename_ext)
+	if getattr(self, "_direct_export_dialog", False):
+		from .modules.mesh import direct_export_settings
+		direct_export_settings.load(self, context, restore_enabled=False)
 
 class ExportREMesh(Operator, ExportHelper):
 	'''Export RE Engine Mesh File'''
@@ -1015,6 +1019,11 @@ class ExportREMesh(Operator, ExportHelper):
 		description = "Set the collection containing the meshes to be exported.\nNote: Mesh collections are red and end with .mesh",
 		update = update_targetMeshCollection
 		)
+	preserveMaterialTable : BoolProperty(
+	   name="Preserve Original Material Table",
+	   description="Ordinary export only: retain original material slots, including unused slots. Requires a fresh import. New materials require a matching MDF update",
+	   default=False)
+	rememberFields : BoolProperty(name="Remember Fields", description="Remember direct mesh export options independently from batch and mod-folder export", default=True)
 	selectedOnly : BoolProperty(
 	   name = "Selected Objects Only",
 	   description = "Limit export to selected objects",
@@ -1098,6 +1107,12 @@ class ExportREMesh(Operator, ExportHelper):
 	   description = "Exports the original bounding boxes from the \"Import Bounding Boxes\" import option. New bounding boxes will be generated for any bones that do not have them",
 	   default = False)
 	def invoke(self, context, event):
+		self._direct_export_dialog = False
+		explicit = {p.identifier: getattr(self, p.identifier) for p in self.properties.bl_rna.properties if p.identifier != "rna_type" and self.properties.is_property_set(p.identifier)}
+		# Blender may reuse a previous dialog value after Clear Scene import.
+		# Only explicit caller targets should retain an invalid collection name.
+		if "targetCollection" not in explicit and self.targetCollection not in bpy.data.collections:
+			self.targetCollection = ""
 		if not bpy.context.scene.get("REMeshDefaultExportSettingsLoaded"):
 			setMeshExportDefaults(self)
 			
@@ -1144,10 +1159,22 @@ class ExportREMesh(Operator, ExportHelper):
 					self.filepath = prevCollection.split(".mesh")[0]+".mesh" + self.filename_ext
 
 			
+		# Explicit caller arguments win over defaults and remembered UI fields.
+		for key, value in explicit.items():
+			try: setattr(self, key, value)
+			except (AttributeError, TypeError): pass
+		from .modules.mesh import direct_export_settings
+		direct_export_settings.load(self, context, explicit)
+		self._direct_export_dialog = True
 		context.window_manager.fileselect_add(self)
 		return {'RUNNING_MODAL'}
+	def cancel(self, context):
+		if getattr(self, "_direct_export_dialog", False):
+			from .modules.mesh import direct_export_settings
+			direct_export_settings.save(self, context)
 	def draw(self, context):
 		layout = self.layout
+		layout.prop(self, "rememberFields")
 		layout.label(text = "Mesh Version:")
 		layout.prop(self, "filename_ext")
 		layout.label(text = "Mesh Collection:")
@@ -1175,9 +1202,13 @@ class ExportREMesh(Operator, ExportHelper):
 			layout.prop(self, "exportBlendShapes", text="SF6: Preserve Source Data")
 		elif self.filename_ext == ".241111606":
 			layout.prop(self, "shapeKeyExportMode", text="Export Shape Keys")
+		elif self.filename_ext == ".250925211":
+			layout.label(text="RE9: ordinary mesh export", icon="INFO")
+			layout.label(text="Source / shape preservation unavailable")
 		if self.filename_ext == ".230110883":
 			row = layout.row()
-			row.enabled = self.exportBlendShapes and self.targetCollection in bpy.data.collections and bool(bpy.data.collections[self.targetCollection].get('SF6PreserveSource'))
+			from .modules.mesh.sf6_auto_hybrid import has_shape_geometry
+			row.enabled = self.sf6HybridPreserve or (self.exportBlendShapes and self.targetCollection in bpy.data.collections and (bool(bpy.data.collections[self.targetCollection].get('SF6PreserveSource')) or has_shape_geometry(bpy.data.collections[self.targetCollection])))
 			row.prop(self, "sf6HybridPreserve")
 			if self.sf6HybridPreserve:
 				layout.label(text="Rebuilds LOD0 geometry/rig; exports edited shape-key deltas.", icon='INFO')
@@ -1211,9 +1242,15 @@ class ExportREMesh(Operator, ExportHelper):
 		layout.prop(self, "rotate90")
 		layout.prop(self, "useBlenderMaterialName")
 		layout.prop(self, "preserveBoneMatrices")
+		row = layout.row()
+		row.enabled = not (self.filename_ext == ".230110883" and self.exportBlendShapes)
+		row.prop(self, "preserveMaterialTable")
 		layout.prop(self, "exportBoundingBoxes")
 	
 	def execute(self, context):
+		if getattr(self, "_direct_export_dialog", False):
+			from .modules.mesh import direct_export_settings
+			direct_export_settings.save(self, context)
 		if self.filepath.endswith(".mesh.230110883") and self.sf6HybridPreserve and not self.exportBlendShapes:
 			self.report({'ERROR'}, 'SF6 Hybrid Shape Export requires Preserve Source Data to be enabled.')
 			return {'CANCELLED'}
@@ -1226,7 +1263,7 @@ class ExportREMesh(Operator, ExportHelper):
 				legacyBatchMode = True
 				self.exportBlendShapes = batch_preserve_source(collection)
 				print(f"SF6 legacy export: batch Preserve Source Data = {self.exportBlendShapes}")
-		options = {"targetCollection":self.targetCollection,"selectedOnly":self.selectedOnly,"exportAllLODs":self.exportAllLODs,"exportBlendShapes":self.exportBlendShapes,"sf6HybridPreserve":self.sf6HybridPreserve,"rotate90":self.rotate90,"useBlenderMaterialName":self.useBlenderMaterialName,"preserveBoneMatrices":self.preserveBoneMatrices,"exportBoundingBoxes":self.exportBoundingBoxes,"autoSolveRepeatedUVs":self.autoSolveRepeatedUVs,"preserveSharpEdges":self.preserveSharpEdges}
+		options = {"targetCollection":self.targetCollection,"selectedOnly":self.selectedOnly,"exportAllLODs":self.exportAllLODs,"exportBlendShapes":self.exportBlendShapes,"sf6HybridPreserve":self.sf6HybridPreserve,"preserveMaterialTable":self.preserveMaterialTable,"rotate90":self.rotate90,"useBlenderMaterialName":self.useBlenderMaterialName,"preserveBoneMatrices":self.preserveBoneMatrices,"exportBoundingBoxes":self.exportBoundingBoxes,"autoSolveRepeatedUVs":self.autoSolveRepeatedUVs,"preserveSharpEdges":self.preserveSharpEdges}
 		try:
 			meshVersion = int(os.path.splitext(self.filepath)[1].replace(".",""))
 		except:
@@ -1248,11 +1285,6 @@ class ExportREMesh(Operator, ExportHelper):
 		
 		bpy.context.scene["REMeshDefaultExportSettingsLoaded"] = 1
 		
-		if not bpy.app.background and bpy.context.preferences.addons[__name__].preferences.showConsole:
-			try: 
-				bpy.ops.wm.console_toggle()
-			except:
-				pass
 		try:
 			success = exportREMeshFile(self.filepath,options)
 		except Exception as error:
@@ -1263,7 +1295,7 @@ class ExportREMesh(Operator, ExportHelper):
 				report_hybrid_export(self, options.get('_sf6HybridReport'))
 			else:
 				self.report({"INFO"},"Exported RE Mesh successfully.")
-			if self.targetCollection in bpy.data.collections:
+			if legacyBatchMode and self.targetCollection in bpy.data.collections:
 				bpy.data.collections[self.targetCollection]["BatchExport_path"] = self.filepath
 				bpy.data.collections[self.targetCollection]["BatchExport_exportAllLODs"] = self.exportAllLODs
 				bpy.data.collections[self.targetCollection]["BatchExport_preserveSharpEdges"] = self.preserveSharpEdges
@@ -1282,11 +1314,6 @@ class ExportREMesh(Operator, ExportHelper):
 		if bpy.context.scene.re_mdf_toolpanel.modDirectory == "":
 			setModDirectoryFromFilePath(self.filepath)
 		
-		if not bpy.app.background and bpy.context.preferences.addons[__name__].preferences.showConsole:
-			try:
-				bpy.ops.wm.console_toggle()
-			except:
-				 pass
 		return {"FINISHED"}
 	
 class ImportREMDF(bpy.types.Operator, ImportHelper):

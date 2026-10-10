@@ -7,6 +7,9 @@ integer provenance is deliberately discarded whenever source identity is no
 longer proven; interpolated IDs must never inherit retail corrective deltas.
 """
 
+from .operation_progress import stage as progress_stage
+
+
 from contextlib import contextmanager
 import json
 from pathlib import Path
@@ -46,13 +49,13 @@ def _copy_properties(source, destination):
 def _lod0_meshes(collection, selected):
     result = []
     for obj in collection.all_objects:
-        if obj.type != 'MESH' or obj.get('~TYPE') or obj.get('MeshExportExclude'):
+        if obj.type != 'MESH' or obj.get('~TYPE'):
             continue
         if selected is not None and obj not in selected:
             continue
         _need(obj.mode == 'OBJECT', 'switch to Object Mode before exporting ' + obj.name)
         metadata = obj.get('SF6SourceMeta')
-        if metadata is not None:
+        if metadata is not None and obj.get('SF6HybridDonorSlotV1') is None:
             try:
                 part = json.loads(metadata)
                 lod = part['lod']
@@ -496,7 +499,7 @@ def _sample_object(original, capture_collection, snapshot_collection,
                    owned_objects, owned_meshes, owned_armatures, rest_armatures,
                    preserve_sharp_edges):
     original_keys = original.data.shape_keys
-    if original_keys is not None and len(original_keys.key_blocks) > 1:
+    if not original.get('SF6AutomaticOrdinaryPart') and original.get('SF6HybridDonorSlotV1') is None and original_keys is not None and len(original_keys.key_blocks) > 1:
         keys = original_keys.key_blocks
         _need(original_keys.use_relative and all(
               key.relative_key == keys[0] and not key.vertex_group for key in list(keys)[1:]),
@@ -514,6 +517,15 @@ def _sample_object(original, capture_collection, snapshot_collection,
     _need(original_keys is None or capture.data.shape_keys != original_keys,
           'private mesh copy shares original shape keys on ' + original.name)
     _clear_animation(capture)
+    donor_slot = original.get('SF6HybridDonorSlotV1')
+    if original.get('SF6AutomaticOrdinaryPart'):donor_slot = 'automatic'
+    if donor_slot is not None:
+        capture.shape_key_clear()
+        for name in list(capture.keys()):
+            if name.startswith('SF6Source') or name == 'SF6HybridDonorSlotV1':
+                del capture[name]
+        _invalidate_provenance(capture.data)
+
     _freeze_transform(capture, original.matrix_world.copy())
     capture.hide_viewport = False
     capture.hide_render = False
@@ -521,7 +533,7 @@ def _sample_object(original, capture_collection, snapshot_collection,
     capture.show_only_shape_key = False
     capture.active_shape_key_index = 0
     transformed = not np.allclose(np.asarray(original.matrix_world), np.eye(4), rtol=0, atol=1e-7)
-    proven_source = (not active_modifiers and not transformed and
+    proven_source = (donor_slot is None and not active_modifiers and not transformed and
                      all(len(face.vertices) == 3 for face in original.data.polygons))
     if proven_source:
         # Decide before sampling keys: retail REST-armature arithmetic is only
@@ -678,10 +690,17 @@ def evaluated_hybrid_collection(source_collection, selected_objects=None, *, pre
         bpy.context.scene.collection.children.link(captures)
         reports = []
         samples = []
-        for original in meshes:
+        for index, original in enumerate(meshes):
+            progress_stage(f"Evaluating part {index+1}/{len(meshes)}: {original.name}", 15+25*index/max(1,len(meshes)))
             copied, part_report, payload = _sample_object(
                 original, captures, lod, owned_objects, owned_meshes,
                 owned_armatures, rest_armatures, preserve_sharp_edges)
+            if original.get('SF6HybridDonorSlotV1') is not None:
+                slot = json.loads(original['SF6HybridDonorSlotV1'])
+                copied.name = f"Group_{slot['group']}_Sub_{slot['sub']}__{slot['material']}"
+                for name in list(copied.keys()):
+                    if name.startswith('SF6Source') or name == 'SF6HybridDonorSlotV1':
+                        del copied[name]
             object_map[original] = copied
             reports.append(part_report)
             samples.append((copied, part_report, payload))

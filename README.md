@@ -76,7 +76,7 @@ The three digits before the slot are the costume number, and they are kept exact
 | Use stable modifiers, sculpt with Multires, join/add compatible geometry, or change the rig while retaining corrective motion | **Preserve Source Data ON** + **Hybrid Shape Export (LOD0) ON** | Rebuilds geometry and skeleton, with compatible corrective shapes and evaluated shading. **LOD0 only.** |
 | Make a full replacement or edits that do not fit the preservation validators | **Preserve Source Data OFF** | Ordinary export rebuilds from Blender data without the source-mode deformation guarantee. |
 
-Both preservation modes require an original SF6 import with **SF6: Preserve Source + Shape Keys**. Retain its source metadata and corrective keys. Keep a saved checkpoint before editing.
+Both preservation modes require original SF6 source data imported with **SF6: Preserve Source + Shape Keys**. Strict mode uses its original collection; automatic hybrid export can resolve the embedded source from compatible shaped geometry moved into another collection. Retain the source metadata, origin attributes and corrective keys. Keep a saved checkpoint before editing.
 
 ### Editing a mesh while preserving the original
 
@@ -123,7 +123,7 @@ Smooth, Simple Deform, Displace and Array without merging also have checks. Test
 
 #### Data Transfer normals
 
-Enable **Data Transfer → Face Corner Data → Custom Normals**. Keep the reference mesh outside the export collection, or mark it **MeshExportExclude**. Hidden references work; their modifiers, transforms and active shapes are evaluated in their current scene state.
+Enable **Data Transfer → Face Corner Data → Custom Normals**. Keep the reference mesh outside the export collection, or use **Selected Objects Only** and leave the reference unselected. Legacy `MeshExportExclude` flags are ignored; there is no separate Include/Exclude control. Hidden references work; their modifiers, transforms and active shapes are evaluated in their current scene state.
 
 Use **Nearest Face Interpolated** for different meshes. **Topology** needs matching evaluated corner order/count at that position in the stack. Place Data Transfer after Subdivision/Multires and after Weighted Normal when transferred normals should be final; later modifiers can alter them. Calculated smooth normals and authored custom normals are valid sources. Mixing and masks follow Blender's evaluated result.
 
@@ -135,14 +135,14 @@ Missing/empty sources and mismatched topology corner counts are refused before r
 - Keys must be unmasked, relative and referenced to the Basis. Every key must produce the same ordered evaluated vertex, edge and polygon layout. Welding or remeshing that changes this layout between keys is refused.
 - SF6 vertex and normal-table limits still apply. Export cannot recover source metadata or keys removed from the project.
 - Multires detail is shared across existing keys. Intermediate or combined game key values can approximate Blender's nonlinear sculpt displacement. Invalid external grids are refused; linked meshes with library-relative grids must be made local and packed first.
-- With selection off, retain exactly one object for each original LOD0 part. With **Selected Objects Only** on, select the desired LOD0 meshes; the armature need not be selected. Unselected parts and all lower LODs are omitted. Parts with no shape links may export without blend shapes, which is reported explicitly.
+- With selection off, the current collection defines the LOD0 geometry to export. Compatible source-backed sections retain shapes; unrelated added/replacement sections export as ordinary geometry with no corrective movement. Ambiguous source conflicts are reported and only affected sections lose preservation, while unrelated valid sections retain it. With **Selected Objects Only** on, select the desired LOD0 meshes; the armature need not be selected. Unselected parts and all lower LODs are omitted. Parts with no shape links may export without blend shapes, which is reported explicitly.
 
 <details>
 <summary>Source-mapped sculpt edits, replacements and C_Hip placeholders</summary>
 
 Sculpt source-mapped geometry with its Basis and corrective keys moving together. Small sculpt-rounding drift retains original deltas; meaningful corrective edits are exported at the mesh format's precision. Edits outside a source key's original authored vertex range are rejected.
 
-Whole replacements without source metadata require matching original Group/Sub/material naming and safely rebuilt shape ranges and normal layouts. Movement must be authored in matching Blender keys. A shaped replacement without safely mapped source vertices or nonzero matching deltas is refused when selected alone.
+Mixed and joined objects are resolved automatically using preserved origin information and compatible corrective keys. No manual donor assignment is required. A section with unverified provenance or incompatible keys falls back to ordinary geometry and is reported; this does not discard other valid sections' shapes. If the exporter cannot identify one intended embedded SF6 source, it refuses rather than guessing. Bind every mixed part to the intended target rig and retain valid bone groups. Join does not automatically retarget another character's corrective semantics.
 
 An exact stub-tool **C_Hip plane placeholder** can retain its source metadata after its shape keys are cleared. Hybrid keeps its ordinary plane geometry and omits its old corrective links. This exception requires the tool's four-vertex quad at the origin, fully weighted to C_Hip, with no shape keys.
 
@@ -155,6 +155,16 @@ The export report lists source-mapped/rebuilt vertices, triangles, shape links, 
 Blender **4.5.3 LTS** validation includes **25 Data Transfer checks / 16 byte-identical strict roundtrips**, **35 snapshot/Weighted Normal regressions**, and earlier **19-check Multires suites** against source and installed builds. A full-model export retained **14 parts / 113 shape links** and strict-roundtripped byte-identically. UVs and corrective endpoints matched at encoded precision; normals matched Blender within one encoding step.
 
 These checks establish Blender evaluation and file contents. New modifier, sculpting and normal-transfer workflows still need **in-game validation**.
+
+### Direct export fields, materials and failure safety
+
+**Remember Fields** stores direct-export choices by format and collection, including after Cancel or a rejected export. Turn it off to use defaults on the next invocation. Batch and Fluffy folder settings remain independent. Deleted collections are not reused as stale export targets.
+
+Ordinary export offers **Preserve Original Material Table** to retain imported material slots/order and append new material names. This does not repair MDF bindings automatically; the exported mesh and MDF must still agree.
+
+Exports stage output before publication. Rejected/failed exports clean up their temporary data and restore selection, active object and mode. Mod-folder publication rolls back files changed by that export; if rollback itself fails, it retains a recovery backup and reports its location. Keep project backups: process termination, disk failure and every external add-on interaction cannot be guaranteed recoverable.
+
+Import/export and batch/folder routes show named progress stages in the system console. On Windows, the console option opens a hidden console without toggling an already visible one off.
 
 ### Batch export and preservation settings
 
@@ -346,7 +356,24 @@ Questions about the SF6 features in this fork belong on [this repository's issue
 
 ---
 
+### UV edits and Resident Evil 9 exports
+
+Ordinary export retains evaluated UV layers and seams, including RE9's third UV channel. Additional reference UV layers stay in Blender; ordinary export writes the target's supported channels and warns about omitted layers, preserving the original workflow. Non-finite/out-of-range values in exported channels and live modifiers that remove required UV maps are rejected before publication. Subdivision UV smoothing follows Blender's evaluated result; remeshing may require transferring or rebuilding UVs.
+
+**RE9 exports are ordinary rebuilt meshes.** SF6 source preservation does not apply to RE9; its source/shape preservation is not implemented. Import the native mesh with its matching streaming companion available. Keep originals and validate exported files in-game.
+
 ## Change log
+
+### Unreleased — local V7 review build
+
+- Automatic mixed/joined SF6 hybrid export, preserving compatible sections without donor assignments.
+- UV precision corrections, RE9 third-UV routing, duplicate-face source preservation and optional ordinary material-table retention.
+- Remembered direct-export fields, repaired export dialogs and restored Quick Batch access.
+- Atomic output, owned temporary-data cleanup, failure-context restoration and consistent progress reporting.
+- Removed separate Include/Exclude controls; use Selected Objects Only.
+
+Local V7 validation uses Blender 4.3.2, including UI-driven workflows and file-content regressions. Windows console behavior and final game behavior still need acceptance testing. The detailed local test archive is separate from this change summary.
+
 
 ### [V0.68 — Modifiers work with Hybrid export](https://github.com/ZZtaii/RE-Mesh-Editor/releases/tag/v0.68)
 

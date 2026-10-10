@@ -33,6 +33,23 @@ def format_hybrid_report(report):
                 f"Selected LOD0 shape links: {report.get('selected_source_shape_links', shape_links)} "
                 f"of {report['source_lod0_shape_links']} source links."
             )
+    exclusions = report.get('explicitly_excluded_parts', [])
+    if exclusions:
+        lines.append(f'{len(exclusions)} explicitly excluded source parts were omitted; '
+                     'remaining parts use the validated subset deformation tables.')
+        for part in exclusions:
+            lines.append(f"Excluded: Group {part['group']} / {part['material']}")
+    if report.get('automatic_source_collection'):
+        lines.append('Preserved shape source automatically resolved: '+report['automatic_source_collection'])
+    automatic = report.get('automatic_mixed_geometry', {})
+    if automatic:
+        lines.append('Automatic mixed geometry: unaffected compatible target shapes were retained.')
+        if automatic.get('new_materials'):
+            lines.append('Update the matching MDF for added materials: '+', '.join(automatic['new_materials']))
+        for section in automatic.get('ordinary_sections', []):
+            lines.append(f"NO SHAPES: {section['object']} / {section['material']}: {section['reason']}")
+        for part in automatic.get('omitted_source_parts', []):
+            lines.append(f"Source shape section absent/rebuilt: Group {part['group']} / {part['material']}")
     evaluation = report.get('evaluated_geometry', {})
     if evaluation.get('corner_split_vertices'):
         lines.append(
@@ -153,21 +170,17 @@ def report_hybrid_export(operator, report):
             )
         if report.get('selected_only') and not report.get('output_shape_links'):
             operator.report({'WARNING'}, 'Selected parts have no source shape links; hybrid output has no blend shapes.')
-        for part in report.get('parts', []):
-            if part.get('rebuilt_vertices'):
-                if part.get('status') == 'placeholder':
-                    detail = 'C_Hip plane; corrective shape links omitted'
-                elif part.get('status') == 'no_source' and part.get('shape_links'):
-                    detail = ('no source identity; '
-                              f"{part.get('transferred_vertices', 0)} transferred shape vertices, "
-                              f"{part.get('zero_delta_vertices', 0)} zero-delta vertices")
-                elif part.get('shape_links'):
-                    detail = (f"{part.get('transferred_vertices', 0)} have transferred deltas, "
-                              f"{part.get('zero_delta_vertices', 0)} have zero shape deltas")
-                else:
-                    detail = 'no source shape links'
-                operator.report(
-                    {'WARNING'},
-                    f"Group {part.get('group', '?')} / {part.get('material', '?')}: "
-                    f"{part['rebuilt_vertices']} rebuilt vertices; {detail}."
-                )
+        if report.get('explicitly_excluded_parts') and not report.get('output_shape_links'):
+            operator.report({'WARNING'}, 'Remaining parts have no source shape links; hybrid output has no blend shapes.')
+        rebuilt = [p for p in report.get('parts', []) if p.get('rebuilt_vertices')]
+        if rebuilt:
+            unshaped = sum(not p.get('shape_links') for p in rebuilt)
+            zero_only = sum(bool(p.get('shape_links')) and not p.get('transferred_vertices')
+                            and p.get('status') == 'no_source' for p in rebuilt)
+            detail = f'{len(rebuilt)} rebuilt parts; {unshaped} have no shape links'
+            if zero_only:
+                detail += f'; {zero_only} have only zero deltas'
+            operator.report({'WARNING'}, detail + '. Full per-part details are in the console.')
+        automatic = report.get('automatic_mixed_geometry', {})
+        if automatic.get('new_materials'):
+            operator.report({'WARNING'}, f"{len(automatic['new_materials'])} added materials need a matching MDF update.")

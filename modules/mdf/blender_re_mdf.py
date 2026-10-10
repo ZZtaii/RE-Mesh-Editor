@@ -354,7 +354,7 @@ def MDFErrorCheck(collectionName):
 	meshCollection = bpy.data.collections.get(meshCollectionName,None)
 	if meshCollection != None:
 		for obj in meshCollection.all_objects:
-			if obj.type == "MESH" and not "MeshExportExclude" in obj and "__" in obj.name:
+			if obj.type == "MESH" and not obj.get("~TYPE") and "__" in obj.name:
 				matName = obj.name.split("__",1)[1].split(".")[0]
 				meshMaterialSet.add(matName)
 				if matName not in materialNameSet:

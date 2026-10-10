@@ -279,7 +279,8 @@ class ExportSF6ModFolder(bpy.types.Operator):
             layout.prop(self, 'selectedOnly')
             layout.prop(self, 'exportBlendShapes')
             row = layout.row()
-            row.enabled = self.exportBlendShapes and collection is not None and bool(collection.get('SF6PreserveSource'))
+            from .sf6_auto_hybrid import has_shape_geometry
+            row.enabled = self.sf6HybridPreserve or (self.exportBlendShapes and collection is not None and (bool(collection.get('SF6PreserveSource')) or has_shape_geometry(collection)))
             row.prop(self, 'sf6HybridPreserve')
             if self.sf6HybridPreserve:
                 layout.label(text='Verified source deltas kept; unmatched parts get zero.', icon='INFO')

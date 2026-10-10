@@ -429,6 +429,12 @@ class WM_OT_REBatchExporter(Operator):
 						meshFailures.append(f"{exportItem.name}: Mesh export was cancelled. See the system console for details.")
 					else:
 						collection = bpy.data.collections[exportItem.name]
+						# The batch exporter owns batch history. Direct export has
+						# independent remembered fields and must not save these.
+						collection["BatchExport_path"] = exportItem.path
+						for name in ("exportAllLODs", "preserveSharpEdges", "rotate90",
+									 "useBlenderMaterialName", "preserveBoneMatrices", "exportBoundingBoxes"):
+							collection["BatchExport_" + name] = getattr(exportItem, name)
 						collection[BATCH_PRESERVE_SOURCE] = bool(exportItem.exportBlendShapes)
 						for name, default in _BATCH_MESH_FIX_DEFAULTS.items():
 							collection["BatchExport_" + name] = weightLimit if name == "limitTotalCount" else getattr(exportItem, name, default)
