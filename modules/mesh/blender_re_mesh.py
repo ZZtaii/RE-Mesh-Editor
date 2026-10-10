@@ -1177,11 +1177,13 @@ def bad_iter(blenderCrap):
             i+=1
         except:
             return
-def selectRepeated(bm):
+def selectRepeated(bm, uvLimit=None):
     bm.verts.index_update()
     bm.verts.ensure_lookup_table()
     targetVert = set()
-    for uv_layer in bad_iter(bm.loops.layers.uv):
+    for layer_index, uv_layer in enumerate(bad_iter(bm.loops.layers.uv)):
+        if uvLimit is not None and layer_index >= uvLimit:
+            break
         uvMap = {}
         for face in bm.faces:
             for loop in face.loops:
@@ -1192,12 +1194,12 @@ def selectRepeated(bm):
                     uvMap[loop.vert.index] = uvPoint
     return targetVert
 
-def solveRepeatedVertex(op,mesh):
+def solveRepeatedVertex(op,mesh,uvLimit=None):
     bpy.ops.mesh.select_all(action='DESELECT')
     bm = bmesh.from_edit_mesh(mesh.data)
     oldmode = bm.select_mode
     bm.select_mode = {'VERT'}    
-    targets = selectRepeated(bm)
+    targets = selectRepeated(bm, uvLimit)
     for target in targets:
         bmesh.utils.vert_separate(target,target.link_edges)
         bm.verts.ensure_lookup_table()    
@@ -1222,7 +1224,7 @@ def deleteClone(clone):
     objs = bpy.data.objects
     objs.remove(objs[clone.name], do_unlink=True)	
 
-def solveRepeatedUVs(selection):
+def solveRepeatedUVs(selection, uvLimit=None):
 	context = bpy.context
 	for selectedObj in selection:
 		if selectedObj.type == "MESH":
@@ -1245,13 +1247,22 @@ def solveRepeatedUVs(selection):
 			# mark seams from uv islands
 			bpy.ops.mesh.select_all(action='SELECT')
 			bpy.ops.uv.select_all(action='SELECT')
-			bpy.ops.uv.seams_from_islands()
+			# A reference map may be active even though the target omits it.
+			# Mark islands only from a supported map, restoring the clone's
+			# active map afterwards; source objects are never changed here.
+			activeUVIndex = selectedObj.data.uv_layers.active_index
+			try:
+				if uvLimit is not None and activeUVIndex >= uvLimit:
+					selectedObj.data.uv_layers.active_index = 0
+				bpy.ops.uv.seams_from_islands()
+			finally:
+				selectedObj.data.uv_layers.active_index = activeUVIndex
 			seams = [e for e in bm.edges if e.seam]
 			bmesh.ops.split_edges(bm, edges=seams)
 			for e in old_seams:
 			    e.seam = True
 			bmesh.update_edit_mesh(me)
-			solveRepeatedVertex(None, obj)
+			solveRepeatedVertex(None, obj, uvLimit)
 			bpy.ops.object.mode_set(mode='OBJECT')
 			transferNormals(clone,selectedObj)
 			if bpy.app.version < (4,0,0):
@@ -1962,7 +1973,7 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 				obj.select_set(True)
 				
 			try:
-				solveRepeatedUVs(selection = bpy.context.selected_objects)
+				solveRepeatedUVs(selection = bpy.context.selected_objects, uvLimit=uvLimit)
 			except Exception as err:
 				raiseWarning(f"Failed to solve repeated UVs. {str(err)}")
 			
