@@ -2087,7 +2087,10 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 					evaluatedSubMeshData.use_auto_smooth = True
 					evaluatedSubMeshData.calc_normals_split()
 				try:
-					evaluatedSubMeshData.calc_tangents()
+					if evaluatedSubMeshData.uv_layers.active_index >= uvLimit:
+						evaluatedSubMeshData.calc_tangents(uvmap=evaluatedSubMeshData.uv_layers[0].name)
+					else:
+						evaluatedSubMeshData.calc_tangents()
 				except:
 					pass
 				vertexGroupIndexToRemapDict = {vgroup.index: remapDict[vgroup.name.removeprefix("SHAPEKEY_")] for vgroup in rawsubmesh.vertex_groups}
