@@ -8,7 +8,7 @@ This fork of **[NSA Cloud's RE Mesh Editor](https://github.com/NSACloud/RE-Mesh-
 
 ### [Download the latest release](https://github.com/ZZtaii/RE-Mesh-Editor/releases/latest)
 
-Current stable release: **[V0.68](https://github.com/ZZtaii/RE-Mesh-Editor/releases/tag/v0.68)** · [Choose an export mode](#choose-an-export-mode) · [Change log](#change-log)
+Current stable release: **[V0.69](https://github.com/ZZtaii/RE-Mesh-Editor/releases/tag/v0.69)** · [What's new](#whats-new-in-v069) · [Choose an export mode](#choose-an-export-mode) · [Change log](#change-log)
 
 > **Recommended: Blender 4.5.3 LTS**, the version used for this fork's validation. Blender 5+ compatibility has not been established by these checks.
 
@@ -23,6 +23,22 @@ Current stable release: **[V0.68](https://github.com/ZZtaii/RE-Mesh-Editor/relea
 - **Fluffy mod folder export:** writes the mesh to its native game path and creates `modinfo.ini`, with selection, bundles and nested menus.
 - **Safer import/export:** validates mesh parsing before clearing the scene and refuses unsupported preservation edits before replacing the destination.
 - **MeshFixes integration:** improves weights and ordinary-export corner attributes, with DD2, Monster Hunter Wilds and Onimusha format updates. Non-SF6 format changes have synthetic validation; retail-file compatibility is not established by this fork's tests.
+
+## What's new in V0.69
+
+V0.69 makes mixed SF6 projects easier to export and fixes UV problems that could change a mesh even when the extra UV map was only there for reference.
+
+| What you can do now | What changed |
+| --- | --- |
+| **Mix or join compatible SF6 parts and keep their corrective shapes.** | Hybrid export finds compatible sections automatically. Moving or joining shaped parts no longer requires manual donor assignments. Keep their imported source information and matching shape keys. Keep parts separate when using live modifiers. |
+| **Keep extra UV maps for reference while exporting normally.** | Extra maps no longer create unnecessary exported vertices or change tangent shading, even when one is active. SF6 writes its first two UV maps; RE9 writes its first three. The extra maps stay in Blender. |
+| **Edit and export RE9's third UV map.** | Ordinary export now writes that channel correctly. UV precision and tiny seam handling are also improved. |
+| **Cancel an export and reopen it with your choices intact.** | Remember Fields keeps direct-export options and the filepath, including after Cancel or an export error. The real Export dialog opens correctly, and removed collections no longer remain as stale targets. |
+| **Keep the original material-slot order when rebuilding a mesh.** | Enable Preserve Original Material Table to retain imported slots, including unused ones, and append new materials. The matching MDF still needs to agree with the mesh. |
+
+Exports also protect an existing destination by preparing the output before replacing it, restore your selection and editing mode after failures, and show named progress stages in the system console. Use **Selected Objects Only** to choose what to export; the separate Include/Exclude controls have been removed.
+
+Subdivision, Mirror, Solidify, Weighted Normal, Multires sculpting, Data Transfer normals and Fluffy bundles remain available from earlier releases. See the workflows below for their settings and limits.
 
 ---
 
@@ -50,13 +66,13 @@ If you are replacing an existing installation, save your work and restart Blende
 
 **Updating:** reinstall from the [latest fork release](https://github.com/ZZtaii/RE-Mesh-Editor/releases/latest), then restart Blender. V0.66-SF6.4 and newer provide an **Open Fork Releases** button for this manual workflow. V0.66-SF6.3 and older builds still show the upstream updater; use the fork's release page instead of that updater.
 
-V0.68 reports addon version `0.68` and lists **ZZtaii** as maintainer in Blender Preferences, with credits to NSA Cloud and the contributors below.
+V0.69 appears as **RE Mesh Editor**, reports addon version `0.69`, and lists **ZZtaii** as maintainer in Blender Preferences, with credits to NSA Cloud and the contributors below. Replace earlier local V8.1 test builds with this release; those installers predate the final UV fixes.
 
 ---
 
 ## Street Fighter 6 workflows
 
-These SF6 features target Street Fighter 6 character meshes (`.mesh.230110883`). Other games continue to use the base addon's import/export paths and have not been revalidated by the SF6 tests.
+These SF6 features target Street Fighter 6 character meshes (`.mesh.230110883`). Other games use their own import/export paths. RE9 ordinary export and its third UV channel also have focused validation in V0.69; this does not extend SF6 source preservation to RE9.
 
 SF6 character files follow a fixed layout, and the addon reads it from the imported filename:
 
@@ -144,6 +160,8 @@ Sculpt source-mapped geometry with its Basis and corrective keys moving together
 
 Mixed and joined objects are resolved automatically using preserved origin information and compatible corrective keys. No manual donor assignment is required. A section with unverified provenance or incompatible keys falls back to ordinary geometry and is reported; this does not discard other valid sections' shapes. If the exporter cannot identify one intended embedded SF6 source, it refuses rather than guessing. Bind every mixed part to the intended target rig and retain valid bone groups. Join does not automatically retarget another character's corrective semantics.
 
+Keep parts separate to export live modifiers with their corrective shapes. Joined or material-split objects currently require enabled non-Armature modifiers to be applied before hybrid export; the exporter refuses that combination while the modifiers remain live.
+
 An exact stub-tool **C_Hip plane placeholder** can retain its source metadata after its shape keys are cleared. Hybrid keeps its ordinary plane geometry and omits its old corrective links. This exception requires the tool's four-vertex quad at the origin, fully weighted to C_Hip, with no shape keys.
 
 The export report lists source-mapped/rebuilt vertices, triangles, shape links, authored delta entries and evaluated modifiers. Use it to check whether added geometry has corrective movement.
@@ -158,11 +176,11 @@ These checks establish Blender evaluation and file contents. New modifier, sculp
 
 ### Direct export fields, materials and failure safety
 
-**Remember Fields** stores direct-export choices by format and collection, including after Cancel or a rejected export. Turn it off to use defaults on the next invocation. Batch and Fluffy folder settings remain independent. Deleted collections are not reused as stale export targets.
+**Remember Fields** stores direct-export choices by format and collection, including after Cancel or a rejected export. Turn it off to stop saving and restoring these remembered choices. Batch and Fluffy folder settings remain independent. Deleted collections are not reused as stale export targets.
 
 Ordinary export offers **Preserve Original Material Table** to retain imported material slots/order and append new material names. This does not repair MDF bindings automatically; the exported mesh and MDF must still agree.
 
-Exports stage output before publication. Rejected/failed exports clean up their temporary data and restore selection, active object and mode. Mod-folder publication rolls back files changed by that export; if rollback itself fails, it retains a recovery backup and reports its location. Keep project backups: process termination, disk failure and every external add-on interaction cannot be guaranteed recoverable.
+Exports stage output before publication. Rejected/failed exports leave the previous destination intact and restore selection, active object and mode. Cleanup is improved, although some Auto Solve exports still leave orphan helper mesh datablocks. Mod-folder publication attempts to roll back files changed by that export; if rollback itself fails, it retains a recovery backup and reports its location. Keep project backups: process termination, disk failure and every external add-on interaction cannot be guaranteed recoverable.
 
 Import/export and batch/folder routes show named progress stages in the system console. On Windows, the console option opens a hidden console without toggling an already visible one off.
 
@@ -219,7 +237,7 @@ Ingrid C1 Style Pack
 
 All the folders sit side by side in your Mods directory — you never nest them by hand, the exporter writes the links. If you name a Parent Mod that does not exist yet, tick **Create Parent Menu** and it will be created in the same export; an existing parent menu is reused, not overwritten.
 
-> **On Windows,** avoid very deep export directories and very long mod folder names. Staged exports can run into the Windows path length limit.
+> **On Windows,** use a short export directory and mod folder name. A longer new-folder destination failed with access denied in testing; a shorter destination and updates to an existing folder passed. The exact cause is still unresolved.
 
 For worked examples of both recipes, field by field, see the [SF6 bundle guide](docs/sf6-bundles.md). There is also an interactive [bundle planner](https://zztaii.github.io/RE-Mesh-Editor/sf6-bundle-planner.html) that lays out the menu structure you want and tells you what to type into each export.
 
@@ -358,21 +376,30 @@ Questions about the SF6 features in this fork belong on [this repository's issue
 
 ### UV edits and Resident Evil 9 exports
 
-Ordinary export retains evaluated UV layers and seams, including RE9's third UV channel. Additional reference UV layers stay in Blender; ordinary export writes the target's supported channels and warns about omitted layers, preserving the original workflow. Non-finite/out-of-range values in exported channels and live modifiers that remove required UV maps are rejected before publication. Subdivision UV smoothing follows Blender's evaluated result; remeshing may require transferring or rebuilding UVs.
+Ordinary export retains evaluated UV layers and seams, including RE9's third UV channel. SF6 exports the first two UV maps and RE9 exports the first three, in Blender's layer order. Keep extra reference maps after those supported channels; reordering a map into a supported slot changes what is exported. Omitted maps stay in Blender and no longer influence Auto Solve splitting or tangent shading, even when an omitted map is active. The exporter warns about omitted layers.
+
+Non-finite/out-of-range values in exported channels and live modifiers that remove required UV maps are rejected before publication. Subdivision UV smoothing follows Blender's evaluated result; remeshing may require transferring or rebuilding UVs. These ordinary-export rules do not relax strict SF6 preservation's UV restrictions.
 
 **RE9 exports are ordinary rebuilt meshes.** SF6 source preservation does not apply to RE9; its source/shape preservation is not implemented. Import the native mesh with its matching streaming companion available. Keep originals and validate exported files in-game.
 
+### Validation and known limitations
+
+V0.69 is based on merged [PR 9](https://github.com/ZZtaii/RE-Mesh-Editor/pull/9), tested through live Blender 4.5.3 LTS workflows on Windows. Coverage includes Luke C3 and Luke/Leon meshes, strict preservation, ordinary and hybrid exports, modifiers, materials, RE9 UV channels, export dialogs, remembered fields and rejected-export safety. All 16 final reference-UV, supported-active-UV and Export-dialog comparisons passed against the fixed source. In-game acceptance was not part of these checks.
+
+Three inherited issues remain: some Auto Solve exports leave orphan helper meshes; some large SF6 hybrid exports fail with a normal-table/index-padding error; and longer Windows mod-folder destinations can fail. Lower the mesh density or use a shorter folder path where applicable. Hybrid exports LOD0 only and requires compatible retained source information; RE9 source/shape preservation is unavailable.
+
 ## Change log
 
-### Unreleased — local V7 review build
+### [V0.69 — Easier SF6 mixing and safer UV export](https://github.com/ZZtaii/RE-Mesh-Editor/releases/tag/v0.69)
 
-- Automatic mixed/joined SF6 hybrid export, preserving compatible sections without donor assignments.
-- UV precision corrections, RE9 third-UV routing, duplicate-face source preservation and optional ordinary material-table retention.
-- Remembered direct-export fields, repaired export dialogs and restored Quick Batch access.
-- Atomic output, owned temporary-data cleanup, failure-context restoration and consistent progress reporting.
-- Removed separate Include/Exclude controls; use Selected Objects Only.
+- Hybrid export automatically preserves compatible corrective shapes in mixed and joined SF6 sections, without manual donor assignments. Duplicate source faces are retained.
+- Extra reference UV maps no longer change ordinary-export seam splitting or tangent shading. UV precision, tiny seams and evaluated UV handling are improved, and RE9's third UV channel is written correctly.
+- Direct Export opens correctly, remembers options and paths after Cancel/errors, avoids stale collection targets, and restores Quick Batch access.
+- Ordinary export can retain the original material table, including unused slots.
+- Staged writes, temporary-data handling, failure-context restoration and console progress are improved.
+- Removed separate Include/Exclude controls; use Selected Objects Only. Stable addon metadata and runtime links now identify this fork.
 
-Local V7 validation uses Blender 4.3.2, including UI-driven workflows and file-content regressions. Windows console behavior and final game behavior still need acceptance testing. The detailed local test archive is separate from this change summary.
+Validated with Blender 4.5.3 LTS on Windows. The known limitations above remain; in-game acceptance is still needed for new workflows.
 
 
 ### [V0.68 — Modifiers work with Hybrid export](https://github.com/ZZtaii/RE-Mesh-Editor/releases/tag/v0.68)

@@ -1,8 +1,8 @@
 #Author: NSA Cloud
 bl_info = {
-	"name": "RE Mesh Editor (Local Test v8.1 2026-10-10)",
+	"name": "RE Mesh Editor",
 	"author": "ZZtaii",
-	"version": (0, 68),
+	"version": (0, 69),
 	"blender": (4, 3, 2),
 	"location": "File > Import-Export",
 	"description": "Import and export RE Engine Mesh files natively into Blender. No Noesis required.",
@@ -893,7 +893,7 @@ class ImportREMesh(Operator, ImportHelper):
 		editorVersion = str(bl_info["version"][0])+"."+str(bl_info["version"][1])
 		print(f"\n{textColors.BOLD}RE Mesh Editor V{editorVersion}{textColors.ENDC}")
 		print(f"Blender Version {bpy.app.version[0]}.{bpy.app.version[1]}.{bpy.app.version[2]}")
-		print("https://github.com/NSACloud/RE-Mesh-Editor")
+		print("https://github.com/ZZtaii/RE-Mesh-Editor")
 		
 		bpy.context.scene["REMeshDefaultImportSettingsLoaded"] = 1
 		
@@ -1281,7 +1281,7 @@ class ExportREMesh(Operator, ExportHelper):
 		editorVersion = str(bl_info["version"][0])+"."+str(bl_info["version"][1])
 		print(f"\n{textColors.BOLD}RE Mesh Editor V{editorVersion}{textColors.ENDC}")
 		print(f"Blender Version {bpy.app.version[0]}.{bpy.app.version[1]}.{bpy.app.version[2]}")
-		print("https://github.com/NSACloud/RE-Mesh-Editor")
+		print("https://github.com/ZZtaii/RE-Mesh-Editor")
 		
 		bpy.context.scene["REMeshDefaultExportSettingsLoaded"] = 1
 		
@@ -1337,7 +1337,7 @@ class ImportREMDF(bpy.types.Operator, ImportHelper):
 		editorVersion = str(bl_info["version"][0])+"."+str(bl_info["version"][1])
 		print(f"\n{textColors.BOLD}RE Mesh Editor V{editorVersion}{textColors.ENDC}")
 		print(f"Blender Version {bpy.app.version[0]}.{bpy.app.version[1]}.{bpy.app.version[2]}")
-		print("https://github.com/NSACloud/RE-Mesh-Editor")
+		print("https://github.com/ZZtaii/RE-Mesh-Editor")
 		multiFileImport = len(self.files) > 1
 		hasImportErrors = False
 		
@@ -1447,7 +1447,7 @@ class ExportREMDF(bpy.types.Operator, ExportHelper):
 		editorVersion = str(bl_info["version"][0])+"."+str(bl_info["version"][1])
 		print(f"\n{textColors.BOLD}RE Mesh Editor V{editorVersion}{textColors.ENDC}")
 		print(f"Blender Version {bpy.app.version[0]}.{bpy.app.version[1]}.{bpy.app.version[2]}")
-		print("https://github.com/NSACloud/RE-Mesh-Editor")
+		print("https://github.com/ZZtaii/RE-Mesh-Editor")
 		success = exportMDFFile(self.filepath,self.targetCollection)
 		if success:
 			self.report({"INFO"},"Exported RE MDF successfully.")
@@ -1605,7 +1605,7 @@ class ImportRESFur(bpy.types.Operator, ImportHelper):
 		editorVersion = str(bl_info["version"][0])+"."+str(bl_info["version"][1])
 		print(f"\n{textColors.BOLD}RE Mesh Editor V{editorVersion}{textColors.ENDC}")
 		print(f"Blender Version {bpy.app.version[0]}.{bpy.app.version[1]}.{bpy.app.version[2]}")
-		print("https://github.com/NSACloud/RE-Mesh-Editor")
+		print("https://github.com/ZZtaii/RE-Mesh-Editor")
 		multiFileImport = len(self.files) > 1
 		hasImportErrors = False
 		
@@ -1705,7 +1705,7 @@ class ExportRESFur(bpy.types.Operator, ExportHelper):
 		editorVersion = str(bl_info["version"][0])+"."+str(bl_info["version"][1])
 		print(f"\n{textColors.BOLD}RE Mesh Editor V{editorVersion}{textColors.ENDC}")
 		print(f"Blender Version {bpy.app.version[0]}.{bpy.app.version[1]}.{bpy.app.version[2]}")
-		print("https://github.com/NSACloud/RE-Mesh-Editor")
+		print("https://github.com/ZZtaii/RE-Mesh-Editor")
 		success = exportSFurFile(self.filepath,self.targetCollection)
 		if success:
 			self.report({"INFO"},"Exported RE SFur successfully.")
