@@ -1,6 +1,6 @@
 #Author: NSA Cloud
 bl_info = {
-	"name": "RE Mesh Editor (Local Test v8 2026-10-10)",
+	"name": "RE Mesh Editor (Local Test v8.1 2026-10-10)",
 	"author": "ZZtaii",
 	"version": (0, 68),
 	"blender": (4, 3, 2),

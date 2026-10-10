@@ -1150,8 +1150,8 @@ def importREMeshFile(filePath,options):
 	print("\033[92m__________________________________\nRE Mesh import finished.\033[0m")
 	return (warningList,errorList)
 
-def checkObjForUVDoubling(obj):
-	for layer in obj.data.uv_layers:
+def checkObjForUVDoubling(obj, uvLimit=None):
+	for layer in list(obj.data.uv_layers)[:uvLimit]:
 		points = {}
 		for loop in obj.data.loops:
 			uv = tuple(layer.data[loop.index].uv)
@@ -1878,7 +1878,8 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 						obj.evaluated_get(dg), preserve_all_data_layers=True, depsgraph=dg
 					)
 				track_mesh(cloneObj.data)
-				if len(cloneObj.data.uv_layers) < len(obj.data.uv_layers):
+				uvLimit = 3 if gameName == "RE9" else 2
+				if min(len(cloneObj.data.uv_layers), uvLimit) < min(len(obj.data.uv_layers), uvLimit):
 					raise ValueError(f"{obj.name}: the evaluated modifier stack removed UV maps ({len(obj.data.uv_layers)} before, {len(cloneObj.data.uv_layers)} after). Disable the destructive modifier or transfer/reproject UVs onto its result before exporting. The source mesh and existing output were retained.")
 				clonedMeshCollection = temporary_collection()
 				clonedMeshCollection.objects.link(cloneObj)
@@ -1901,7 +1902,7 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 				cloneMeshNameDict[obj.name] = cloneObj.name
 				deleteCopiedMeshList.append(cloneObj)
 				if options["autoSolveRepeatedUVs"]:
-					hasUVDoubling = checkObjForUVDoubling(cloneObj)
+					hasUVDoubling = checkObjForUVDoubling(cloneObj, uvLimit)
 					if hasUVDoubling:
 						#print(f"Found doubled uvs on {obj.name}")
 						doubledUVList.append(cloneObj)
@@ -2103,14 +2104,15 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 				# RE9 type 6 is UV3. Other supported writers expose only UV0/UV1.
 				uvLimit = 3 if gameName == "RE9" else 2
 				if len(evaluatedSubMeshData.uv_layers) > uvLimit:
-					raise ValueError(f"{rawsubmesh.name}: {len(evaluatedSubMeshData.uv_layers)} UV maps would be truncated. {gameName or 'This target'} export supports {uvLimit}. Keep only the intended export UV maps on a duplicate mesh; the source and destination were not changed.")
-				for uvLayer in evaluatedSubMeshData.uv_layers:
+					raiseWarning(f"{rawsubmesh.name}: exporting the first {uvLimit} UV maps supported by {gameName or 'this target'}. {len(evaluatedSubMeshData.uv_layers) - uvLimit} additional reference UV map(s) remain in Blender and are not written to the mesh.")
+					showWarningMessage = True
+				for uvLayer in list(evaluatedSubMeshData.uv_layers)[:uvLimit]:
 					uvValues = np.empty((len(uvLayer.data), 2), dtype=np.float64)
 					uvLayer.data.foreach_get('uv', uvValues.ravel())
 					uvValues[:, 1] = 1.0 - uvValues[:, 1]
 					if not np.isfinite(uvValues).all() or np.any(np.abs(uvValues) > 65504):
 						raise ValueError(f"{rawsubmesh.name}: UV map '{uvLayer.name}' contains non-finite or out-of-range values for the mesh UV format. Correct the UVs before exporting.")
-				meshHasUV3 = len(evaluatedSubMeshData.uv_layers) > 2
+				meshHasUV3 = gameName == "RE9" and len(evaluatedSubMeshData.uv_layers) > 2
 				if meshHasUV3:
 					parsedMesh.bufferHasUV3 = True
 
@@ -2751,7 +2753,7 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 	print(f"Materials ({str(len(parsedMesh.materialNameList))}):")
 	for materialName in parsedMesh.materialNameList:
 		print(materialName)
-	if showWarningMessage:
+	if showWarningMessage and not bpy.app.background:
 		showMessageBox("Warnings occured during export. Check Window > Toggle System Console for details.",title = "Mesh Export Warning", icon = "ERROR")
 	print("\033[92m__________________________________\nRE Mesh export finished.\033[0m")
 	return True

@@ -358,7 +358,7 @@ Questions about the SF6 features in this fork belong on [this repository's issue
 
 ### UV edits and Resident Evil 9 exports
 
-Ordinary export retains evaluated UV layers and seams, including RE9's third UV channel. Extra unsupported layers, non-finite UVs, out-of-range UVs and live modifiers that remove UV maps are rejected before publication. Subdivision UV smoothing follows Blender's evaluated result; remeshing may require transferring or rebuilding UVs.
+Ordinary export retains evaluated UV layers and seams, including RE9's third UV channel. Additional reference UV layers stay in Blender; ordinary export writes the target's supported channels and warns about omitted layers, preserving the original workflow. Non-finite/out-of-range values in exported channels and live modifiers that remove required UV maps are rejected before publication. Subdivision UV smoothing follows Blender's evaluated result; remeshing may require transferring or rebuilding UVs.
 
 **RE9 exports are ordinary rebuilt meshes.** SF6 source preservation does not apply to RE9; its source/shape preservation is not implemented. Import the native mesh with its matching streaming companion available. Keep originals and validate exported files in-game.
 
