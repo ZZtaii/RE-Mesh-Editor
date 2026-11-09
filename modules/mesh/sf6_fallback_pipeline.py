@@ -45,7 +45,8 @@ def atomic_ordinary(path,collection,options,exporter,loss_report):
             _need(result,'PROTOTYPE_ORDINARY_EXPORT_FAILED')
             with open(stage,'rb') as f:data=f.read()
             mesh=validate_ordinary(data)
-            with open(stage,'rb') as f:os.fsync(f.fileno())
+            # Windows refuses to flush a read-only handle (EBADF); open writable.
+            with open(stage,'r+b') as f:os.fsync(f.fileno())
             if options.get('_sf6PlanCheck'):options['_sf6PlanCheck']()
             os.replace(stage,path)
             options['_sf6HybridReport']={'parts':[{'group':p['group'],'material':mesh.materials[p['material']],

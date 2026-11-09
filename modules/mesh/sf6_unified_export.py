@@ -423,7 +423,8 @@ def _execute_unified_snapshot(path,options,exporter,review,*,logical_path=None,s
                 report['published']=False
                 preview_complete=True
                 return True
-            with open(staged,'rb') as f:os.fsync(f.fileno())
+            # Windows refuses to flush a read-only handle (EBADF); open writable.
+            with open(staged,'r+b') as f:os.fsync(f.fileno())
             os.replace(staged,path)
             options['_sf6UnifiedReport']['status']='committed'
             options['_sf6UnifiedReport']['published']=True
