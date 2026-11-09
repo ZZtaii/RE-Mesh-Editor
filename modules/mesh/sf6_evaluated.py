@@ -16,7 +16,7 @@ from pathlib import Path
 import struct
 
 import bmesh
-from .sf6_mode_snapshot import alias_copy, logical_name
+from .sf6_mode_snapshot import alias_copy, logical_name, private_object_context
 import bpy
 import numpy as np
 
@@ -278,19 +278,23 @@ def _legacy_sharp_snapshots(samples):
     for obj, _, _ in samples:
         obj.select_set(True)
     try:
-        for obj in tuple(bpy.context.selected_objects):
-            bpy.context.view_layer.objects.active = obj
-            _set_private_mode('EDIT')
-            bm = bmesh.from_edit_mesh(bpy.context.edit_object.data)
-            sharp = [edge for edge in bm.edges if not edge.smooth]
-            if sharp:
-                bmesh.ops.split_edges(bm, edges=sharp)
-            bmesh.update_edit_mesh(bpy.context.edit_object.data)
-            _set_private_mode('OBJECT')
+        # A mode snapshot pins the context's selection and edit object, so
+        # address each private copy directly instead of reading them back.
+        for obj, _, _ in samples:
+            with private_object_context(obj):
+                bpy.context.view_layer.objects.active = obj
+                _set_private_mode('EDIT')
+                bm = bmesh.from_edit_mesh(obj.data)
+                sharp = [edge for edge in bm.edges if not edge.smooth]
+                if sharp:
+                    bmesh.ops.split_edges(bm, edges=sharp)
+                bmesh.update_edit_mesh(obj.data)
+                _set_private_mode('OBJECT')
     finally:
         active = bpy.context.view_layer.objects.active
         if active in private_objects and active.mode != 'OBJECT':
-            _set_private_mode('OBJECT')
+            with private_object_context(active):
+                _set_private_mode('OBJECT')
     remapped_samples = []
     for obj, report, payload, row_name, original_coords, normals, corner_name in markers:
         mesh = obj.data
