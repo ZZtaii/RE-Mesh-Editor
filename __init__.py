@@ -2,7 +2,7 @@
 bl_info = {
 	"name": "RE Mesh Editor",
 	"author": "ZZtaii",
-	"version": (0, 69),
+	"version": (0, 71),
 	"blender": (4, 3, 2),
 	"location": "File > Import-Export",
 	"description": "Import and export RE Engine Mesh files natively into Blender. No Noesis required.",
@@ -24,6 +24,7 @@ from .modules.blender_utils import operator_exists
 from .modules.mesh.file_re_mesh import meshFileVersionToGameNameDict
 from .modules.mesh.blender_re_mesh import importREMeshFile,exportREMeshFile,getMeshWeightLimits
 from .modules.mesh.sf6_hybrid_report import report_hybrid_export
+from .modules.mesh.sf6_unified_messages import LOD_POLICY_ITEMS
 from .modules.mesh.sf6_mod_folder_operator import ExportSF6ModFolder
 from .modules.mesh.sf6_export_settings import BATCH_PRESERVE_SOURCE, batch_preserve_source
 from .modules.mesh.re_mesh_propertyGroups import (
@@ -899,6 +900,10 @@ class ImportREMesh(Operator, ImportHelper):
 		
 		
 		multiFileImport = len(self.files) > 1
+		if not self.files:
+			self.report({'ERROR'}, 'No files were selected for import.')
+			return {'CANCELLED'}
+		firstFailure = ''
 		hasImportErrors = False
 		importedCount = 0
 		mergeArmatureName = ""
@@ -928,6 +933,7 @@ class ImportREMesh(Operator, ImportHelper):
 						(armature.name for armature in bpy.data.armatures if armature.name not in armaturesBefore), "")
 			else:
 				hasImportErrors = True
+				if not firstFailure: firstFailure = f'{file.name}: {errorMessage}'
 				self.report({'WARNING'} if multiFileImport else {'ERROR'}, f"{file.name}: {errorMessage}")
 			
 			
@@ -942,7 +948,7 @@ class ImportREMesh(Operator, ImportHelper):
 			
 			return {"FINISHED"}
 		else:
-			self.report({'WARNING'}, f"Imported {importedCount}/{len(self.files)} RE Mesh files; {len(self.files)-importedCount} failed.")
+			self.report({'WARNING'} if importedCount else {'ERROR'}, f"Completed: {importedCount}/{len(self.files)} RE Mesh files; {len(self.files)-importedCount} failed. First failure: {firstFailure}. Review failed files and retry them.")
 			# Keep partial imports undoable; report a failure only when none succeeded.
 			return {"FINISHED"} if importedCount else {"CANCELLED"}
 	
@@ -974,7 +980,7 @@ def update_targetMeshCollection(self,context):
 		#print(browserSpace.params.filename)
 		if ".mesh" in self.targetCollection:
 			browserSpace.params.filename = self.targetCollection.split(".mesh")[0]+".mesh" + self.filename_ext
-	if getattr(self, "_direct_export_dialog", False):
+	if getattr(self, "sf6DialogActive", False) or getattr(self, "_direct_export_dialog", False):
 		from .modules.mesh import direct_export_settings
 		if bpy.data.collections.get(self.targetCollection) is None:
 			return  # Do not reload fields while a collection name is incomplete.
@@ -985,6 +991,18 @@ def update_targetMeshCollection(self,context):
 			self.filepath = os.path.join(os.path.dirname(self.filepath),
 				self.targetCollection.split(".mesh")[0] + ".mesh" + self.filename_ext)
 		direct_export_settings.load(self, context, restore_enabled=False)
+		updateSF6LodDisplay(self)
+def updateSF6LodDisplay(self):
+	if self.filename_ext != '.230110883' or not (self.sf6UnifiedOptIn or self.sf6ExportWorkflow): return
+	from .modules.mesh import direct_export_settings
+	try:
+		values = {key: getattr(self, key) for key in direct_export_settings.FIELDS}
+		shown = direct_export_settings.prepare_options(self, values, mesh_version=230110883, enable_unified=self.sf6UnifiedOptIn)
+		policy = shown.get('sf6LodPolicy', '')
+		if policy in ('retain_if_compatible', 'lod0'): self.sf6LodChoice = policy
+	except Exception:
+		pass  # Unknown saved values still require review, not automatic replacement.
+
 def getMeshExportDefaultWeightLimit(filenameExt):
 	try:
 		meshVersion = int(str(filenameExt).replace(".", ""))
@@ -995,9 +1013,10 @@ def getMeshExportDefaultWeightLimit(filenameExt):
 
 def updateMeshExportWeightLimit(self, context):
 	self.limitTotalCount = getMeshExportDefaultWeightLimit(self.filename_ext)
-	if getattr(self, "_direct_export_dialog", False):
+	if getattr(self, "sf6DialogActive", False) or getattr(self, "_direct_export_dialog", False):
 		from .modules.mesh import direct_export_settings
 		direct_export_settings.load(self, context, restore_enabled=False)
+		updateSF6LodDisplay(self)
 
 class ExportREMesh(Operator, ExportHelper):
 	'''Export RE Engine Mesh File'''
@@ -1042,6 +1061,19 @@ class ExportREMesh(Operator, ExportHelper):
 	   name = "SF6: Hybrid Shape Export (LOD0)",
 	   description = "Rebuild LOD0 geometry and rig, evaluate stable modifiers on the Basis and corrective keys, and retain compatible source shapes. Requires embedded SF6 source; lower LODs are lost",
 	   default = False)
+	# Runtime controls stay hidden; visible workflow uses the reviewed plan.
+	sf6ExportWorkflow : StringProperty(default='', options={'HIDDEN'})
+	sf6LodPolicy : StringProperty(default='', options={'HIDDEN'})
+	sf6LodChoice : EnumProperty(name='LOD Export', items=LOD_POLICY_ITEMS, update=lambda self, context: setattr(self, 'sf6LodPolicy', self.sf6LodChoice), options={'SKIP_SAVE'})
+	sf6UnifiedOptIn : BoolProperty(default=False, options={'HIDDEN','SKIP_SAVE'})
+	sf6DialogActive : BoolProperty(default=False, options={'HIDDEN','SKIP_SAVE'})
+	sf6DialogSession : StringProperty(default='', options={'HIDDEN','SKIP_SAVE'})
+	sf6ReviewOnly : BoolProperty(default=False, options={'HIDDEN','SKIP_SAVE'})
+	sf6RigPolicy : StringProperty(default='auto', options={'HIDDEN','SKIP_SAVE'})
+	sf6ApprovedCorrectiveLosses : StringProperty(default='[]', options={'HIDDEN','SKIP_SAVE'})
+	sf6ExpectedPlan : StringProperty(default='', options={'HIDDEN','SKIP_SAVE'})
+	sf6UnifiedResult : StringProperty(default='', options={'HIDDEN','SKIP_SAVE'})
+	sf6SettingsScope : StringProperty(default='direct', options={'HIDDEN','SKIP_SAVE'})
 	rotate90 : BoolProperty(
 	   name = "Convert Z Up To Y Up",
 	   description = "Rotates objects 90 degrees for export. Leaving this option enabled is recommended",
@@ -1108,7 +1140,10 @@ class ExportREMesh(Operator, ExportHelper):
 	   default = False)
 	def invoke(self, context, event):
 		self._direct_export_dialog = False
+		self.sf6DialogActive = False
 		explicit = {p.identifier: getattr(self, p.identifier) for p in self.properties.bl_rna.properties if p.identifier != "rna_type" and self.properties.is_property_set(p.identifier)}
+		from uuid import uuid4
+		self.sf6DialogSession = uuid4().hex
 		# Blender may reuse a previous dialog value after Clear Scene import.
 		# Only explicit caller targets should retain an invalid collection name.
 		if "targetCollection" not in explicit and self.targetCollection not in bpy.data.collections:
@@ -1164,16 +1199,33 @@ class ExportREMesh(Operator, ExportHelper):
 			try: setattr(self, key, value)
 			except (AttributeError, TypeError): pass
 		from .modules.mesh import direct_export_settings
+		if 'sf6UnifiedOptIn' not in explicit:
+			self.sf6UnifiedOptIn = True
 		direct_export_settings.load(self, context, explicit)
+		# Derive the displayed migration policy, without committing a profile.
+		if self.filename_ext == '.230110883' and (self.sf6UnifiedOptIn or self.sf6ExportWorkflow):
+			try:
+				values = {key: getattr(self, key) for key in direct_export_settings.FIELDS}
+				shown = direct_export_settings.prepare_options(self, values, mesh_version=230110883, enable_unified=self.sf6UnifiedOptIn)
+				policy = shown.get('sf6LodPolicy', '')
+				if policy in ('retain_if_compatible', 'lod0'): self.sf6LodChoice = policy
+			except Exception:
+				pass  # Unknown stored values remain intact for the settings review.
 		self._direct_export_dialog = True
+		self.sf6DialogActive = True
 		context.window_manager.fileselect_add(self)
 		return {'RUNNING_MODAL'}
 	def cancel(self, context):
-		if getattr(self, "_direct_export_dialog", False):
+		if self.sf6UnifiedOptIn or self.sf6ExportWorkflow:
+			from .modules.mesh import sf6_unified_ui
+			sf6_unified_ui.record_result(self,{'targetCollection':self.targetCollection},error=ValueError('SF6_EXPORT_CANCELLED'))
+			return
+		if getattr(self, "sf6DialogActive", False) or getattr(self, "_direct_export_dialog", False):
 			from .modules.mesh import direct_export_settings
 			direct_export_settings.save(self, context)
 	def draw(self, context):
 		layout = self.layout
+		unified_ui = self.filename_ext == ".230110883" and bool(self.sf6UnifiedOptIn or self.sf6ExportWorkflow)
 		layout.prop(self, "rememberFields")
 		layout.label(text = "Mesh Version:")
 		layout.prop(self, "filename_ext")
@@ -1197,7 +1249,13 @@ class ExportREMesh(Operator, ExportHelper):
 			row.alert=True
 		layout.prop(self, "selectedOnly")
 		layout.label(text = "Advanced Options")
-		layout.prop(self, "exportAllLODs")
+		if unified_ui:
+			layout.prop(self, "sf6LodChoice")
+			layout.label(text="Preserves compatible source data; reviews shape-key losses." if self.exportBlendShapes else "Source corrective shapes will not be preserved.", icon="INFO")
+			from .modules.mesh.sf6_unified_dialogs import draw_details_button
+			draw_details_button(layout)
+		else:
+			layout.prop(self, "exportAllLODs")
 		if self.filename_ext == ".230110883":
 			layout.prop(self, "exportBlendShapes", text="SF6: Preserve Source Data")
 		elif self.filename_ext == ".241111606":
@@ -1205,7 +1263,7 @@ class ExportREMesh(Operator, ExportHelper):
 		elif self.filename_ext == ".250925211":
 			layout.label(text="RE9: ordinary mesh export", icon="INFO")
 			layout.label(text="Source / shape preservation unavailable")
-		if self.filename_ext == ".230110883":
+		if self.filename_ext == ".230110883" and not unified_ui:
 			row = layout.row()
 			from .modules.mesh.sf6_auto_hybrid import has_shape_geometry
 			row.enabled = self.sf6HybridPreserve or (self.exportBlendShapes and self.targetCollection in bpy.data.collections and (bool(bpy.data.collections[self.targetCollection].get('SF6PreserveSource')) or has_shape_geometry(bpy.data.collections[self.targetCollection])))
@@ -1215,7 +1273,7 @@ class ExportREMesh(Operator, ExportHelper):
 				layout.label(text="Untouched source deltas stay; lower LODs are lost.")
 				if self.selectedOnly:
 					layout.label(text="Exports only selected LOD0 mesh parts.")
-		if self.targetCollection in bpy.data.collections and bpy.data.collections[self.targetCollection].get('SF6PreserveSource') and self.exportBlendShapes and not self.sf6HybridPreserve:
+		if not unified_ui and self.targetCollection in bpy.data.collections and bpy.data.collections[self.targetCollection].get('SF6PreserveSource') and self.exportBlendShapes and not self.sf6HybridPreserve:
 			layout.label(text="Keeps all source LODs and deformation tables.", icon='INFO')
 			layout.label(text="Existing vertex/shape edits and deletions only.")
 			layout.label(text="Uses embedded source skeleton; Blender rig edits are ignored.")
@@ -1227,7 +1285,7 @@ class ExportREMesh(Operator, ExportHelper):
 		#row2.enabled = hasREToolbox
 		row2.prop(self,"preserveSharpEdges")
 		row = layout.row()
-		row.enabled = not (self.filename_ext == ".230110883" and self.exportBlendShapes and self.sf6HybridPreserve)
+		row.enabled = not (not unified_ui and self.filename_ext == ".230110883" and self.exportBlendShapes and self.sf6HybridPreserve)
 		row.prop(self,"splitLoopVertices")
 		if not row.enabled:
 			layout.label(text="Hybrid export keeps vertex order; corner splitting is off.", icon='INFO')
@@ -1248,50 +1306,105 @@ class ExportREMesh(Operator, ExportHelper):
 		layout.prop(self, "exportBoundingBoxes")
 	
 	def execute(self, context):
-		if getattr(self, "_direct_export_dialog", False):
-			from .modules.mesh import direct_export_settings
-			direct_export_settings.save(self, context)
-		if self.filepath.endswith(".mesh.230110883") and self.sf6HybridPreserve and not self.exportBlendShapes:
+		from .modules.mesh import sf6_unified_ui
+		sf6_unified_ui.record_result(self,{'targetCollection':self.targetCollection},error=ValueError('SF6_PREFLIGHT_NOT_COMPLETED'))
+		unified_requested = bool(self.sf6UnifiedOptIn or self.sf6ExportWorkflow)
+		if self.filepath.endswith(".mesh.230110883") and self.sf6HybridPreserve and not self.exportBlendShapes and not unified_requested:
+			sf6_unified_ui.record_result(self,{'targetCollection':self.targetCollection},error=ValueError('SF6_CONFLICTING_LEGACY_FLAGS'))
 			self.report({'ERROR'}, 'SF6 Hybrid Shape Export requires Preserve Source Data to be enabled.')
 			return {'CANCELLED'}
 		# Legacy batch callers (RE Toolbox) omit the SF6 preservation argument.
 		# Use the independent batch choice only for calls without a dialog/value.
 		legacyBatchMode = False
-		if not self.options.is_invoke and not self.properties.is_property_set("exportBlendShapes"):
+		if self.sf6SettingsScope == "batch" or (not (self.sf6DialogActive or getattr(self,"_direct_export_dialog",False)) and not self.options.is_invoke and not self.properties.is_property_set("exportBlendShapes") and not unified_requested):
 			collection = bpy.data.collections.get(self.targetCollection)
 			if collection is not None and (self.filepath.endswith('.mesh.230110883') or collection.get('SF6PreserveSource')):
 				legacyBatchMode = True
-				self.exportBlendShapes = batch_preserve_source(collection)
+				if not self.properties.is_property_set("exportBlendShapes"):
+					self.exportBlendShapes = batch_preserve_source(collection)
 				print(f"SF6 legacy export: batch Preserve Source Data = {self.exportBlendShapes}")
 		options = {"targetCollection":self.targetCollection,"selectedOnly":self.selectedOnly,"exportAllLODs":self.exportAllLODs,"exportBlendShapes":self.exportBlendShapes,"sf6HybridPreserve":self.sf6HybridPreserve,"preserveMaterialTable":self.preserveMaterialTable,"rotate90":self.rotate90,"useBlenderMaterialName":self.useBlenderMaterialName,"preserveBoneMatrices":self.preserveBoneMatrices,"exportBoundingBoxes":self.exportBoundingBoxes,"autoSolveRepeatedUVs":self.autoSolveRepeatedUVs,"preserveSharpEdges":self.preserveSharpEdges}
 		try:
 			meshVersion = int(os.path.splitext(self.filepath)[1].replace(".",""))
 		except:
-			self.report({"INFO"},"Mesh file path is missing number extension. Cannot export.")
+			sf6_unified_ui.record_result(self,options,error=ValueError("SF6_INVALID_TARGET_EXTENSION"))
+			self.report({"ERROR"},"Choose a mesh filename with the numeric suffix for the selected game.")
 			return{"CANCELLED"}
 		if not self.properties.is_property_set('limitTotalCount'):
 			self.limitTotalCount = getMeshExportDefaultWeightLimit('.' + str(meshVersion))
 		options.update(splitLoopVertices=self.splitLoopVertices, limitTotal=self.limitTotal,
 		               limitTotalCount=self.limitTotalCount, normalizeWeights=self.normalizeWeights)
 		if meshVersion != 230110883:
+			legacyBatchMode = False
 			options['sf6HybridPreserve'] = False
 		if meshVersion == 241111606:
 			options['exportBlendShapes'] = self.shapeKeyExportMode != 'NO'
 			options['blendShapeExportMode'] = 0 if self.shapeKeyExportMode == 'MODE0' else 1
-		editorVersion = str(bl_info["version"][0])+"."+str(bl_info["version"][1])
-		print(f"\n{textColors.BOLD}RE Mesh Editor V{editorVersion}{textColors.ENDC}")
-		print(f"Blender Version {bpy.app.version[0]}.{bpy.app.version[1]}.{bpy.app.version[2]}")
-		print("https://github.com/ZZtaii/RE-Mesh-Editor")
-		
-		bpy.context.scene["REMeshDefaultExportSettingsLoaded"] = 1
-		
+		from .modules.mesh import sf6_unified_ui, direct_export_settings
+		try:
+			if meshVersion==230110883 and self.sf6SettingsScope not in ('direct','batch'):
+				raise ValueError('SF6_INVALID_SETTINGS_SCOPE')
+			for key in ('sf6ExportWorkflow','sf6LodPolicy'):
+				value=getattr(self,key)
+				if value:options[key]=value
+			if legacyBatchMode or self.sf6SettingsScope=='batch':
+				options=sf6_unified_ui.resolve_batch_options(bpy.data.collections.get(self.targetCollection),options,mesh_version=meshVersion,enable_unified=self.sf6UnifiedOptIn)
+			else:
+				options=direct_export_settings.prepare_options(self,options,mesh_version=meshVersion,enable_unified=self.sf6UnifiedOptIn)
+			options=sf6_unified_ui.apply_review_inputs(self,options)
+			if options.get('sf6ExportWorkflow') == 'unified_v1' and not self.exportBlendShapes and self.sf6DialogActive:
+				# The visible LOD choice is authoritative for an intentional Ordinary export.
+				options['exportAllLODs'] = self.sf6LodChoice != 'lod0'
+				options['sf6LodPolicy'] = self.sf6LodChoice
+			if (unified_requested or options.get('sf6ExportWorkflow')=='unified_v1') and (self.sf6DialogActive or getattr(self,'_direct_export_dialog',False)) and self.filename_ext!='.'+str(meshVersion):
+				raise sf6_unified_ui.SettingsReviewRequired(sf6_unified_ui.review_report(['dialog_version_target_mismatch']))
+			if self.sf6ReviewOnly:
+				if meshVersion!=230110883 or options.get('sf6ExportWorkflow')!='unified_v1':
+					raise sf6_unified_ui.SettingsReviewRequired(sf6_unified_ui.review_report(['review_requires_unified_sf6'],scope=options.get('_sf6SettingsScope',self.sf6SettingsScope)))
+				from .modules.mesh.sf6_unified_export import plan_export, UnifiedSettingsConflict
+				plan=plan_export(self.filepath,options)
+				options['_sf6UnifiedReport']=dict(plan,status='planned')
+				if plan['conflicts']:raise UnifiedSettingsConflict(plan)
+				sf6_unified_ui.record_result(self,options)
+				self.report({'INFO'},'Export plan prepared. No file was written.')
+				return {'FINISHED'}
+		except Exception as error:
+			sf6_unified_ui.record_result(self,options,error=error)
+			from .modules.mesh.sf6_unified_messages import format_error
+			from .modules.mesh.sf6_unified_dialogs import remember_result
+			model = format_error(error)
+			remember_result(dict(status='blocked', destination=self.filepath, error_detail=str(error), scope='direct', target_collection=self.targetCollection))
+			self.report({'ERROR'}, ' '.join(model['lines']))
+			return {'CANCELLED'}
+		if options.get('sf6ExportWorkflow') == 'unified_v1' and (self.sf6DialogActive or getattr(self, '_direct_export_dialog', False)):
+			from .modules.mesh.sf6_direct_review import begin
+			return begin(self, context, options)
 		try:
 			success = exportREMeshFile(self.filepath,options)
 		except Exception as error:
-			self.report({'ERROR'}, str(error))
+			sf6_unified_ui.record_result(self,options,error=error)
+			from .modules.mesh.sf6_unified_messages import format_error
+			from .modules.mesh.sf6_unified_dialogs import remember_result
+			remember_result(dict(status='failed', destination=self.filepath, error_detail=str(error), scope='direct', target_collection=self.targetCollection))
+			self.report({'ERROR'}, ' '.join(format_error(error)['lines']))
 			return {'CANCELLED'}
 		if success:
-			if options.get('sf6HybridPreserve', False):
+			bpy.context.scene["REMeshDefaultExportSettingsLoaded"] = 1
+			options.setdefault("_sf6UnifiedReport", {"schema":1,"status":"committed"})
+			sf6_unified_ui.record_result(self,options)
+			sf6_unified_ui.commit_operator_settings(self,options)
+			if legacyBatchMode:
+				sf6_unified_ui.commit_batch_settings(bpy.data.collections.get(self.targetCollection),options)
+			elif (self.sf6DialogActive or getattr(self,'_direct_export_dialog',False)):
+				persistence=direct_export_settings.save(self,context,migration_success=True)
+				if isinstance(persistence,dict):
+					options['_sf6UnifiedReport']['persistence']=persistence
+					sf6_unified_ui.record_result(self,options)
+			if options.get('sf6ExportWorkflow') == 'unified_v1':
+				from .modules.mesh.sf6_unified_messages import format_result
+				model = format_result(options['_sf6UnifiedReport'])
+				self.report({model['severity']}, ' '.join(model['lines']))
+			elif options.get('sf6HybridPreserve', False):
 				report_hybrid_export(self, options.get('_sf6HybridReport'))
 			else:
 				self.report({"INFO"},"Exported RE Mesh successfully.")
@@ -1308,6 +1421,7 @@ class ExportREMesh(Operator, ExportHelper):
 				bpy.data.collections[self.targetCollection]["BatchExport_preserveBoneMatrices"] = self.preserveBoneMatrices
 				bpy.data.collections[self.targetCollection]["BatchExport_exportBoundingBoxes"] = self.exportBoundingBoxes
 		else:
+			sf6_unified_ui.record_result(self,options,error=ValueError("SF6_BACKEND_FAILED"))
 			self.report({"ERROR"},"RE Mesh export failed. See Window > Toggle System Console for info on how to fix it.")
 			return {'CANCELLED'}
 		
@@ -1338,30 +1452,8 @@ class ImportREMDF(bpy.types.Operator, ImportHelper):
 		print(f"\n{textColors.BOLD}RE Mesh Editor V{editorVersion}{textColors.ENDC}")
 		print(f"Blender Version {bpy.app.version[0]}.{bpy.app.version[1]}.{bpy.app.version[2]}")
 		print("https://github.com/ZZtaii/RE-Mesh-Editor")
-		multiFileImport = len(self.files) > 1
-		hasImportErrors = False
-		
-		for index, file in enumerate(self.files):
-			filepath = os.path.join(self.directory,file.name)
-			if multiFileImport:
-				print(f"Multi MDF Import ({index+1}/{len(self.files)})")
-			if os.path.isfile(filepath):
-				success = importMDFFile(filepath)
-				if not success: hasImportErrors = True
-			else:
-				hasImportErrors = True
-				raiseWarning(f"Path does not exist, cannot import file. If you are importing multiple files at once, they must all be in the same directory.\nInvalid Path:{filepath}")
-			
-			
-		if not hasImportErrors:
-			if not multiFileImport:
-				self.report({"INFO"},"Imported RE MDF file.")
-			else:
-				self.report({"INFO"},f"Imported {str(len(self.files))} RE MDF files.")
-			return {"FINISHED"}
-		else:
-			self.report({"INFO"},"Failed to import RE MDF. Check the console for errors.")
-			return {"CANCELLED"}
+		from .modules.mesh.import_outcomes import import_files, report_import
+		return report_import(self, "RE MDF", import_files(self.files, self.directory, importMDFFile))
 	def invoke(self, context, event):
 		if self.directory:
 			return self.execute(context)
@@ -1448,7 +1540,14 @@ class ExportREMDF(bpy.types.Operator, ExportHelper):
 		print(f"\n{textColors.BOLD}RE Mesh Editor V{editorVersion}{textColors.ENDC}")
 		print(f"Blender Version {bpy.app.version[0]}.{bpy.app.version[1]}.{bpy.app.version[2]}")
 		print("https://github.com/ZZtaii/RE-Mesh-Editor")
-		success = exportMDFFile(self.filepath,self.targetCollection)
+		if not self.targetCollection or self.targetCollection not in bpy.data.collections:
+			self.report({'ERROR'}, 'Select an MDF collection, then export again.')
+			return {'CANCELLED'}
+		try:
+			success = exportMDFFile(self.filepath,self.targetCollection)
+		except Exception as error:
+			self.report({'ERROR'}, 'RE MDF export failed: ' + str(error))
+			return {'CANCELLED'}
 		if success:
 			self.report({"INFO"},"Exported RE MDF successfully.")
 			
@@ -1458,7 +1557,7 @@ class ExportREMDF(bpy.types.Operator, ExportHelper):
 			bpy.data.collections[self.targetCollection]["BatchExport_path"] = self.filepath
 			return {"FINISHED"}
 		else:
-			self.report({"INFO"},"Failed to export RE MDF. Check Window > Toggle System Console for details.")
+			self.report({"ERROR"},"RE MDF export failed. Select a valid MDF collection and review the specific error before retrying.")
 			return {"CANCELLED"}
 
 class ImportREFBXSkel(bpy.types.Operator, ImportHelper):
@@ -1487,7 +1586,7 @@ class ImportREFBXSkel(bpy.types.Operator, ImportHelper):
 		if success:
 			return {"FINISHED"}
 		else:
-			self.report({"INFO"},"Failed to import RE FBXSkel.")
+			self.report({"ERROR"},"RE FBXSkel import failed. Review the specific error and retry.")
 			return {"CANCELLED"}
 
 def update_targetFBXSkelArmature(self,context):
@@ -1581,7 +1680,7 @@ class ExportREFBXSkel(bpy.types.Operator, ExportHelper):
 			bpy.data.objects[self.targetArmature]["BatchExport_path"] = self.filepath
 			return {"FINISHED"}
 		else:
-			self.report({"INFO"},"Failed to export RE FBXSkel. Check Window > Toggle System Console for details.")
+			self.report({"ERROR"},"RE FBXSkel export failed. Review the specific error and retry.")
 			return {"CANCELLED"}
 
 class ImportRESFur(bpy.types.Operator, ImportHelper):
@@ -1606,28 +1705,8 @@ class ImportRESFur(bpy.types.Operator, ImportHelper):
 		print(f"\n{textColors.BOLD}RE Mesh Editor V{editorVersion}{textColors.ENDC}")
 		print(f"Blender Version {bpy.app.version[0]}.{bpy.app.version[1]}.{bpy.app.version[2]}")
 		print("https://github.com/ZZtaii/RE-Mesh-Editor")
-		multiFileImport = len(self.files) > 1
-		hasImportErrors = False
-		
-		for index, file in enumerate(self.files):
-			filepath = os.path.join(self.directory,file.name)
-			if os.path.isfile(filepath):
-				success = importSFurFile(filepath)
-				if not success: hasImportErrors = True
-			else:
-				hasImportErrors = True
-				raiseWarning(f"Path does not exist, cannot import file. If you are importing multiple files at once, they must all be in the same directory.\nInvalid Path:{filepath}")
-			
-			
-		if not hasImportErrors:
-			if not multiFileImport:
-				self.report({"INFO"},"Imported RE SFur file.")
-			else:
-				self.report({"INFO"},f"Imported {str(len(self.files))} RE SFur files.")
-			return {"FINISHED"}
-		else:
-			self.report({"INFO"},"Failed to import RE SFur. Check the console for errors.")
-			return {"CANCELLED"}
+		from .modules.mesh.import_outcomes import import_files, report_import
+		return report_import(self, "RE SFur", import_files(self.files, self.directory, importSFurFile))
 	def invoke(self, context, event):
 		if self.directory:
 			return self.execute(context)
@@ -1716,7 +1795,7 @@ class ExportRESFur(bpy.types.Operator, ExportHelper):
 			bpy.data.collections[self.targetCollection]["BatchExport_path"] = self.filepath
 			return {"FINISHED"}
 		else:
-			self.report({"INFO"},"Failed to export RE SFur. Check Window > Toggle System Console for details.")
+			self.report({"ERROR"},"RE SFur export failed. Review the specific error and retry.")
 			return {"CANCELLED"}
 
 
@@ -1981,6 +2060,8 @@ def re_mesh_editor_export(self, context):
 	self.layout.menu("EXPORT_MT_re_mesh_editor",icon = "MOD_LINEART")
 
 def register():
+	from .modules.mesh import sf6_unified_dialogs
+	sf6_unified_dialogs.register()
 	for classEntry in classes:
 		bpy.utils.register_class(classEntry)
 		
@@ -2019,6 +2100,15 @@ def register():
 		
 	
 def unregister():
+	from .modules.mesh import sf6_unified_dialogs, direct_export_settings
+	sf6_unified_dialogs.unregister()
+	direct_export_settings.clear_runtime()
+	# Remove RNA properties before unregistering their PropertyGroup types.
+	# Otherwise disabled/reloaded addons leave dangling Scene/Object fields.
+	del bpy.types.Scene.re_mdf_toolpanel
+	del bpy.types.Scene.re_modworkspace_toolpanel
+	del bpy.types.Object.re_mdf_material
+	del bpy.types.Object.re_sfur_data
 	del bpy.types.WindowManager.enableModFileTracking
 	for classEntry in classes:
 		bpy.utils.unregister_class(classEntry)

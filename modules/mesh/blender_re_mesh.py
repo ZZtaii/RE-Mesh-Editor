@@ -15,6 +15,7 @@
 
 import bpy
 import bmesh
+from .sf6_mode_snapshot import logical_name, current_selected_objects, private_object_context
 import json
 from .operation_progress import tracked_operation, stage as progress_stage
 from .export_resources import owned_export_resources, track_object, track_mesh, track_armature, temporary_collection
@@ -1144,6 +1145,12 @@ def importREMeshFile(filePath,options):
 			importBoundingBoxes(parsedMesh.boundingBox,parsedMesh.boundingSphere,boundingBoxCollection,armatureObj,parsedMesh.skeleton,options["rotate90"])
 		else:
 			importBoundingBox(parsedMesh.boundingBox,f"Mesh Bounding Box",boundingBoxCollection,rotate90 = options["rotate90"])
+	if options.get('createCollections') and meshCollection.get('SF6PreserveSource'):
+		try:
+			from .sf6_unified_export import capture_import_baseline
+			capture_import_baseline(meshCollection)
+		except Exception as error:
+			print('UNIFIED_BASELINE_UNAVAILABLE:', type(error).__name__)
 	meshImportEndTime = time.time()
 	meshImportTime =  meshImportEndTime - meshImportStartTime
 	print(f"Mesh imported in {timeFormat%(meshImportTime * 1000)} ms.")
@@ -1228,50 +1235,51 @@ def solveRepeatedUVs(selection, uvLimit=None):
 	context = bpy.context
 	for selectedObj in selection:
 		if selectedObj.type == "MESH":
-			context.view_layer.objects.active  = selectedObj
-			if bpy.app.version < (4,0,0):
-				if selectedObj.data.use_auto_smooth == False:
-					selectedObj.data.use_auto_smooth = True
-					selectedObj.data.auto_smooth_angle = .785 #45 degrees, try to preserve normals if auto smooth was disabled
-			selectedObj.data.polygons.foreach_set("use_smooth", [True] * len(selectedObj.data.polygons))
-			clone = cloneMesh(selectedObj)
-			bpy.ops.object.mode_set(mode='EDIT')
-			obj = context.edit_object
-			me = obj.data
-			bm = bmesh.from_edit_mesh(me)
-			# old seams
-			old_seams = [e for e in bm.edges if e.seam]
-			# unmark
-			for e in old_seams:
-			    e.seam = False
-			# mark seams from uv islands
-			bpy.ops.mesh.select_all(action='SELECT')
-			bpy.ops.uv.select_all(action='SELECT')
-			# A reference map may be active even though the target omits it.
-			# Mark islands only from a supported map, restoring the clone's
-			# active map afterwards; source objects are never changed here.
-			activeUVIndex = selectedObj.data.uv_layers.active_index
-			try:
-				if uvLimit is not None and activeUVIndex >= uvLimit:
-					selectedObj.data.uv_layers.active_index = 0
-				bpy.ops.uv.seams_from_islands()
-			finally:
-				selectedObj.data.uv_layers.active_index = activeUVIndex
-			seams = [e for e in bm.edges if e.seam]
-			bmesh.ops.split_edges(bm, edges=seams)
-			for e in old_seams:
-			    e.seam = True
-			bmesh.update_edit_mesh(me)
-			solveRepeatedVertex(None, obj, uvLimit)
-			bpy.ops.object.mode_set(mode='OBJECT')
-			transferNormals(clone,selectedObj)
-			if bpy.app.version < (4,0,0):
-				selectedObj.data.calc_normals_split()
-			deleteClone(clone)
-			
-			
-			
-			print(f"Solved Repeated UVs on {selectedObj.name}")
+			with private_object_context(selectedObj):
+				context.view_layer.objects.active  = selectedObj
+				if bpy.app.version < (4,0,0):
+					if selectedObj.data.use_auto_smooth == False:
+						selectedObj.data.use_auto_smooth = True
+						selectedObj.data.auto_smooth_angle = .785 #45 degrees, try to preserve normals if auto smooth was disabled
+				selectedObj.data.polygons.foreach_set("use_smooth", [True] * len(selectedObj.data.polygons))
+				clone = cloneMesh(selectedObj)
+				bpy.ops.object.mode_set(mode='EDIT')
+				obj = context.edit_object
+				me = obj.data
+				bm = bmesh.from_edit_mesh(me)
+				# old seams
+				old_seams = [e for e in bm.edges if e.seam]
+				# unmark
+				for e in old_seams:
+				    e.seam = False
+				# mark seams from uv islands
+				bpy.ops.mesh.select_all(action='SELECT')
+				bpy.ops.uv.select_all(action='SELECT')
+				# A reference map may be active even though the target omits it.
+				# Mark islands only from a supported map, restoring the clone's
+				# active map afterwards; source objects are never changed here.
+				activeUVIndex = selectedObj.data.uv_layers.active_index
+				try:
+					if uvLimit is not None and activeUVIndex >= uvLimit:
+						selectedObj.data.uv_layers.active_index = 0
+					bpy.ops.uv.seams_from_islands()
+				finally:
+					selectedObj.data.uv_layers.active_index = activeUVIndex
+				seams = [e for e in bm.edges if e.seam]
+				bmesh.ops.split_edges(bm, edges=seams)
+				for e in old_seams:
+				    e.seam = True
+				bmesh.update_edit_mesh(me)
+				solveRepeatedVertex(None, obj, uvLimit)
+				bpy.ops.object.mode_set(mode='OBJECT')
+				transferNormals(clone,selectedObj)
+				if bpy.app.version < (4,0,0):
+					selectedObj.data.calc_normals_split()
+				deleteClone(clone)
+				
+				
+				
+				print(f"Solved Repeated UVs on {selectedObj.name}")
 
 
 #End solve repeated UVs
@@ -1280,30 +1288,31 @@ def solveRepeatedUVs(selection, uvLimit=None):
 #RE Toolbox Split Sharp Edges
 def splitSharpEdges():
 	context = bpy.context
-	if context.selected_objects != []:
-		selection = context.selected_objects	
+	if current_selected_objects() != []:
+		selection = current_selected_objects()	
 	else:
 		selection = bpy.context.scene.objects
 	for selectedObj in selection:
 		if selectedObj.type == "MESH":
-			isHidden = selectedObj.hide_viewport
-			if isHidden:
-				selectedObj.hide_viewport = False
-			context.view_layer.objects.active  = selectedObj
-			
-			
-			bpy.ops.object.mode_set(mode='EDIT')
-			obj = bpy.context.edit_object
-			me = obj.data
-			bm = bmesh.from_edit_mesh(me)
-			# old seams
-			sharp = [e for e in bm.edges if not e.smooth]
-			if sharp != []:
-				print(f"Split Sharp Edges on {selectedObj.name}")
-			bmesh.ops.split_edges(bm, edges=sharp)
-			bmesh.update_edit_mesh(me)
-			bpy.ops.object.mode_set(mode='OBJECT')
-			selectedObj.hide_viewport = isHidden
+			with private_object_context(selectedObj):
+				isHidden = selectedObj.hide_viewport
+				if isHidden:
+					selectedObj.hide_viewport = False
+				context.view_layer.objects.active  = selectedObj
+				
+				
+				bpy.ops.object.mode_set(mode='EDIT')
+				obj = bpy.context.edit_object
+				me = obj.data
+				bm = bmesh.from_edit_mesh(me)
+				# old seams
+				sharp = [e for e in bm.edges if not e.smooth]
+				if sharp != []:
+					print(f"Split Sharp Edges on {selectedObj.name}")
+				bmesh.ops.split_edges(bm, edges=sharp)
+				bmesh.update_edit_mesh(me)
+				bpy.ops.object.mode_set(mode='OBJECT')
+				selectedObj.hide_viewport = isHidden
 
 
 #End split sharp edges
@@ -1313,18 +1322,32 @@ def splitSharpEdges():
 @tracked_operation("Export")
 @owned_export_resources
 def exportREMeshFile(filePath,options):
+	if options.get('sf6ExportWorkflow') == 'unified_v1' and not options.get('_sf6UnifiedDispatch'):
+		from .sf6_unified_export import execute_unified
+		return execute_unified(filePath, options, exportREMeshFile)
+	options["_sf6OrdinaryWarnings"] = []
+	def _export_warning(message):
+		# Presentation only: capture and deduplicate warnings for readable reports.
+		message = str(message)
+		if message not in options["_sf6OrdinaryWarnings"]:
+			options["_sf6OrdinaryWarnings"].append(message)
+			raiseWarning(message)
 	progress_stage("Checking export mode and source collection", 2)
 	sourceCollection = bpy.data.collections.get(options.get('targetCollection', ''))
 	isSF6Source = sourceCollection is not None and sourceCollection.get('SF6PreserveSource')
 	if options.get('sf6HybridPreserve', False):
+		# Classify the scene after pending authoring/constraint transforms settle.
+		bpy.context.view_layer.update()
 		# This is an explicit LOD0 rebuild with compatible source shape data grafted
 		# back in. It must never become an implicit source-mode fallback.
 		import base64
+		import struct
 		import binascii
 		import hashlib
 		import tempfile
 		import zlib
-		from .sf6_hybrid import build_hybrid_mesh, _scene_objects
+		from .sf6_hybrid import build_hybrid_mesh, _scene_objects, HybridExportError
+		from .sf6_fallback_pipeline import unverified_source_ordinary, source_recalculation_issue
 		from .sf6_evaluated import evaluated_hybrid_collection
 		from .sf6_source import SOURCE, SourceMesh
 		options.pop('_sf6HybridReport', None)
@@ -1335,14 +1358,18 @@ def exportREMeshFile(filePath,options):
 		if not isSF6Source:
 			from .sf6_auto_hybrid import source_collection_view
 			chosen = tuple(bpy.context.selected_objects) if options.get('selectedOnly') else None
-			with source_collection_view(sourceCollection, chosen) as (source_view, anchor_name):
-				view_options = dict(options, targetCollection=source_view.name)
-				result = exportREMeshFile(filePath, view_options)
-				if result:
-					options['_sf6HybridReport'] = view_options['_sf6HybridReport']
-					options['_sf6HybridReport']['automatic_source_collection'] = anchor_name
-					bpy.context.scene['REMeshLastExportedCollection'] = sourceCollection.name
-				return result
+			try:
+				with source_collection_view(sourceCollection, chosen) as (source_view, anchor_name):
+					view_options = dict(options, targetCollection=source_view.name)
+					result = exportREMeshFile(filePath, view_options)
+					if result:
+						options['_sf6HybridReport'] = view_options['_sf6HybridReport']
+						options['_sf6HybridReport']['automatic_source_collection'] = anchor_name
+						bpy.context.scene['REMeshLastExportedCollection'] = sourceCollection.name
+					return result
+			except HybridExportError as error:
+				if 'Cannot identify one preserved SF6 source for these shapes' not in str(error):raise
+				return unverified_source_ordinary(filePath,sourceCollection,options,exportREMeshFile,'Preserved source discovery is unavailable or ambiguous')
 		selected_objects = tuple(bpy.context.selected_objects) if options.get('selectedOnly') else None
 		if selected_objects is not None and not any(
 				obj in selected_objects and obj.type == 'MESH' and
@@ -1351,27 +1378,50 @@ def exportREMeshFile(filePath,options):
 			raise ValueError('No selected source mesh objects in the target collection.')
 		if options.get('rotate90', True) != sourceCollection.get('SF6SourceRotate'):
 			raise ValueError('Use the same axis conversion setting as the preserved source import.')
-		text = bpy.data.texts.get(sourceCollection.get(SOURCE, ''))
+		source_text_name = sourceCollection.get(SOURCE, '')
+		text = bpy.data.texts.get(source_text_name) if isinstance(source_text_name, str) else None
 		if text is None:
-			raise ValueError('Missing embedded SF6 source. Re-import the original mesh.')
+			return unverified_source_ordinary(filePath,sourceCollection,options,exportREMeshFile,'Missing embedded source')
 		try:
 			source_bytes = zlib.decompress(base64.b64decode(text.as_string()))
 		except (ValueError, binascii.Error, zlib.error) as error:
-			raise ValueError('Embedded SF6 source could not be decoded.') from error
+			return unverified_source_ordinary(filePath,sourceCollection,options,exportREMeshFile,'Embedded source could not be decoded')
 		if hashlib.sha256(source_bytes).hexdigest() != sourceCollection.get('SF6SourceSHA256'):
-			raise ValueError('Embedded SF6 source hash mismatch')
+			return unverified_source_ordinary(filePath,sourceCollection,options,exportREMeshFile,'Embedded source hash mismatch')
 		# Automatic mixed-object normalization owns temporary data only. The
 		# recursive call uses the existing evaluated/atomic writer unchanged.
-		from .sf6_auto_hybrid import needs_automatic, automatic_collection
+		from .sf6_auto_hybrid import needs_automatic
+		from .sf6_fallback_pipeline import normalized_collection as automatic_collection, atomic_ordinary
 		if not sourceCollection.get('SF6AutomaticHybrid'):
-			auto_source = SourceMesh(source_bytes)
+			try:auto_source = SourceMesh(source_bytes)
+			except (ValueError,IndexError,KeyError,struct.error,OverflowError):
+				return unverified_source_ordinary(filePath,sourceCollection,options,exportREMeshFile,'Embedded source structure is unsupported or invalid')
+			recalculation_issue = source_recalculation_issue(auto_source)
+			if recalculation_issue is not None:
+				return unverified_source_ordinary(filePath,sourceCollection,options,exportREMeshFile,
+					'Ordinary fallback: '+recalculation_issue,source_status='verified_source_incompatible_recalculation',source=auto_source)
 			from .sf6_hybrid import _explicit_source_exclusions, _parts_by_key
 			if selected_objects is None:
 				_explicit_source_exclusions(sourceCollection, auto_source, sourceCollection['SF6SourceSHA256'], _parts_by_key(auto_source))
 			if needs_automatic(sourceCollection, auto_source, sourceCollection['SF6SourceSHA256'], selected_objects):
-				with automatic_collection(sourceCollection, auto_source, sourceCollection['SF6SourceSHA256'], selected_objects) as (prepared, prepared_selected, auto_report):
+				with automatic_collection(sourceCollection, auto_source, sourceCollection['SF6SourceSHA256'], selected_objects, options.get('_sf6ApprovedCorrectiveLosses', ()), options.get('_sf6PreserveSourceOwners', ()), options) as (prepared, prepared_selected, auto_report):
 					auto_options = dict(options, targetCollection=prepared.name, selectedOnly=False, useBlenderMaterialName=False)
-					result = exportREMeshFile(filePath, auto_options)
+					if auto_report.get('ordinary_only'):
+						raw_options = dict(options, useBlenderMaterialName=True) if auto_report.get('raw_ordinary_source') else auto_options
+						try:
+							result = atomic_ordinary(filePath, prepared, raw_options, exportREMeshFile, auto_report)
+						finally:
+							options["_sf6OrdinaryErrors"] = raw_options.get("_sf6OrdinaryErrors", [])
+							options["_sf6OrdinaryWarnings"] = raw_options.get("_sf6OrdinaryWarnings", [])
+							options["_sf6OrdinaryReport"] = raw_options.get("_sf6OrdinaryReport", {})
+						auto_options['_sf6HybridReport'] = raw_options['_sf6HybridReport']
+					else:
+						try:
+							result = exportREMeshFile(filePath, auto_options)
+						finally:
+							options["_sf6OrdinaryErrors"] = auto_options.get("_sf6OrdinaryErrors", [])
+							options["_sf6OrdinaryWarnings"] = auto_options.get("_sf6OrdinaryWarnings", [])
+							options["_sf6OrdinaryReport"] = auto_options.get("_sf6OrdinaryReport", {})
 					if result:
 						report = auto_options['_sf6HybridReport']
 						report['automatic_mixed_geometry'] = auto_report
@@ -1415,7 +1465,7 @@ def exportREMeshFile(filePath,options):
 									exportBlendShapes=False, exportAllLODs=False,
 									selectedOnly=False, splitLoopVertices=False,
 									preserveSharpEdges=False, autoSolveRepeatedUVs=False,
-									_sf6EvaluatedSnapshot=True)
+									_sf6EvaluatedSnapshot=True, _sf6SuppressExportNotifications=True)
 			# Geometry and corrective keys use one private evaluated Basis.
 			# The snapshot contains only the requested LOD0 parts. Corner
 			# Any UV/sharp splitting happens inside that shared snapshot.
@@ -1431,7 +1481,13 @@ def exportREMeshFile(filePath,options):
 				ordinary_options['targetCollection'] = evaluated_collection.name
 				ordinary_options["preserveMaterialTable"] = False
 				progress_stage("Rebuilding staged LOD0 mesh", 45)
-				if not exportREMeshFile(ordinary_path, ordinary_options):
+				try:
+					ordinary_result = exportREMeshFile(ordinary_path, ordinary_options)
+				finally:
+					options["_sf6OrdinaryErrors"] = ordinary_options.get("_sf6OrdinaryErrors", [])
+					options["_sf6OrdinaryWarnings"] = ordinary_options.get("_sf6OrdinaryWarnings", [])
+					options["_sf6OrdinaryReport"] = ordinary_options.get("_sf6OrdinaryReport", {})
+				if not ordinary_result:
 					raise ValueError('Ordinary LOD0 rebuild failed; the destination was not changed.')
 				with open(ordinary_path, 'rb') as ordinary_file:
 					ordinary_bytes = ordinary_file.read()
@@ -1452,6 +1508,7 @@ def exportREMeshFile(filePath,options):
 				hybrid_file.write(hybrid_bytes)
 				hybrid_file.flush()
 				os.fsync(hybrid_file.fileno())
+			if options.get('_sf6PlanCheck'):options['_sf6PlanCheck']()
 			os.replace(staged_output, filePath)
 			# The ordinary staging export records the temporary collection.
 			# Keep the UI's last-export marker attached to the real collection.
@@ -1517,6 +1574,7 @@ def exportREMeshFile(filePath,options):
 
 	
 	errorDict = dict()
+	options["_sf6OrdinaryErrors"] = []
 	#TODO Fix having all bones as weighted bones breaks export
 	meshExportStartTime = time.time()
 	vertexCount = 0
@@ -1548,16 +1606,8 @@ def exportREMeshFile(filePath,options):
 		maxWeightsPerVertexExtended = 12
 		maxWeightedBones = 1024
 	padWithLastWeightIndex = True if gameName == "PRAG" or gameName == "MHS3" or gameName == "ONIWOTS" or gameName == "RE9" else False
-	errorInfoDict["ExtendedMaxWeightsPerVertexExceeded"] = f"""Extended Max Weights Per Vertex Exceeded On Sub Mesh
-A vertex has more the maximum of {maxWeightsPerVertexExtended} weights assigned to it.
-
-HOW TO FIX:
-_______________
-Limit total weights to {maxWeightsPerVertexExtended} in weight paint mode and normalize all weights from the Weights menu.
-
-OR
-Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
-"""
+	errorInfoDict["MaxWeightsPerVertexExceeded"] = f"Too many bone weights per vertex\nReduce primary influences to {maxWeightsPerVertex}, then normalize valid weights."
+	errorInfoDict["ExtendedMaxWeightsPerVertexExceeded"] = f"Too many bone weights per vertex\nReduce extended influences to {maxWeightsPerVertexExtended}, then normalize valid weights."
 	MAX_VERTICES = 65536
 	MAX_VERTICES_EXTENDED = 4294967295
 	MAX_FACES = 4294967295
@@ -1733,7 +1783,7 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 	
 			#print(bone.name)
 			if len(armatureObj.data.bones) == 0:
-				raiseWarning("Armature contains no bones, skipping armature.")
+				_export_warning("Armature contains no bones, skipping armature.")
 	else:
 		print(f"Armature: None")
 	
@@ -1909,7 +1959,7 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 							allowedGroupNames=allowedGroupNames)
 						print(f"Limited total weights to {limitTotalCount} on {cloneObj.name}")
 					except Exception as err:
-						raiseWarning(f"Failed to limit total weights on {obj.name}. {str(err)}")
+						_export_warning(f"Failed to limit total weights on {obj.name}. {str(err)}")
 				cloneMeshNameDict[obj.name] = cloneObj.name
 				deleteCopiedMeshList.append(cloneObj)
 				if options["autoSolveRepeatedUVs"]:
@@ -1941,6 +1991,7 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 				
 				if isFirstLOD:
 					hasWeights = False
+					used_group_ids = {g.group for v in cloneObj.data.vertices for g in v.groups}
 					for vg in obj.vertex_groups:#If weight is applied to any vertex groups, add them to weighted bone set
 						
 						if vg.name.startswith("SHAPEKEY_"):
@@ -1949,13 +2000,13 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 							shapeKeyBoneSet.add(vgName)
 						else:
 							vgName = vg.name
-						if any(vg.index in [g.group for g in v.groups] for v in cloneObj.data.vertices) and vgName in armatureBoneDict:
+						if vg.index in used_group_ids and vgName in armatureBoneDict:
 							weightedBonesSet.add(vgName)
 							hasWeights = True
 						else:
 							remapDict[vgName] = 0
 					if armatureObj != None and not hasWeights:
-						raiseWarning(f"No valid vertex weights found on {obj.name}!")
+						_export_warning(f"No valid vertex weights found on {obj.name}!")
 						showWarningMessage = True
 						#addErrorToDict(errorDict, "NoWeightsOnMesh", obj.name)  
 					if armatureObj == None and len(remapDict) != 0:
@@ -1973,15 +2024,15 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 				obj.select_set(True)
 				
 			try:
-				solveRepeatedUVs(selection = bpy.context.selected_objects, uvLimit=uvLimit)
+				solveRepeatedUVs(selection = current_selected_objects(), uvLimit=uvLimit)
 			except Exception as err:
-				raiseWarning(f"Failed to solve repeated UVs. {str(err)}")
+				_export_warning(f"Failed to solve repeated UVs. {str(err)}")
 			
 			"""
 			if hasattr(bpy.types, "OBJECT_PT_re_tools_quick_export_panel"):#RE Toolbox installed
 				bpy.ops.re_toolbox.solve_repeated_uvs()
 			else:
-				raiseWarning("RE Toolbox is not installed. Cannot solve repeated UVs automatically.")
+				_export_warning("RE Toolbox is not installed. Cannot solve repeated UVs automatically.")
 			bpy.ops.object.select_all(action='DESELECT')
 			"""
 			for obj in previousSelection:
@@ -1995,16 +2046,16 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 			try:
 				splitSharpEdges()
 			except Exception as err:
-				raiseWarning(f"Failed to split sharp edges. {str(err)}")
+				_export_warning(f"Failed to split sharp edges. {str(err)}")
 			
 			"""
 			if hasattr(bpy.types, "OBJECT_PT_re_tools_quick_export_panel"):#RE Toolbox installed
 				try:	
 					bpy.ops.re_toolbox.split_sharp_edges()
 				except Exception as err:
-					raiseWarning(f"Failed to split sharp edges. RE Toolbox may be outdated. Update to the latest version in Edit > Preferences > Addons > RE Toolbox\n{str(err)}")
+					_export_warning(f"Failed to split sharp edges. RE Toolbox may be outdated. Update to the latest version in Edit > Preferences > Addons > RE Toolbox\n{str(err)}")
 			else:
-				raiseWarning("RE Toolbox is not installed. Cannot split sharp edges.")
+				_export_warning("RE Toolbox is not installed. Cannot split sharp edges.")
 			"""
 			bpy.ops.object.select_all(action='DESELECT')
 			for obj in previousSelection:
@@ -2021,7 +2072,7 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 					remapDict[bone.name] = remapIndex
 					remapIndex += 1
 			if len(parsedMesh.skeleton.weightedBones) == 0:
-				raiseWarning(f"No bones have any weights assigned to them. Defaulting all weights to {armatureObj.data.bones[0].name}")
+				_export_warning(f"No bones have assigned weights. Export will bind all vertices to “{armatureObj.data.bones[0].name}”. Check weights before use.")
 				parsedMesh.skeleton.weightedBones = [armatureObj.data.bones[0].name]
 			boneRemapEndTime = time.time()
 			boneRemapTime =  boneRemapEndTime - boneRemapStartTime
@@ -2055,13 +2106,13 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 						materialName = evaluatedSubMeshData.materials[0].name.split(".")[0]
 					else:
 						try:#Get material from mesh name if it isn't found
-							materialName = rawsubmesh.name.split("__",1)[1].split(".")[0]
+							materialName = logical_name(rawsubmesh).split("__",1)[1].split(".")[0]
 						except:
 								addErrorToDict(errorDict, "NoMaterialOnSubMesh", rawsubmesh.name)
 				
 				else:#Material name from object name
 					try:#Get material from mesh name if it isn't found
-						materialName = rawsubmesh.name.split("__",1)[1].split(".")[0]
+						materialName = logical_name(rawsubmesh).split("__",1)[1].split(".")[0]
 					except:#Fall back to blender material name if object material name is missing
 						print(f"Couldn't split material name on {rawsubmesh.name}, using blender material name instead")
 						if len(evaluatedSubMeshData.materials) > 0:
@@ -2076,10 +2127,16 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 				else:
 					parsedSubMesh.materialIndex = parsedMesh.materialNameList.index(materialName)
 				# Convert to global
+				worldMatrix = rawsubmesh.matrix_world
+				if options.get('_sf6EvaluatedSnapshot') and rawsubmesh.get('SF6OrdinaryWorldMatrix') is not None:
+					values = list(rawsubmesh['SF6OrdinaryWorldMatrix'])
+					if len(values) != 16 or not np.isfinite(values).all():
+						raise ValueError('PROTOTYPE_INVALID_ORDINARY_WORLD_MATRIX')
+					worldMatrix = Matrix([values[i:i+4] for i in range(0,16,4)])
 				if options["rotate90"]:
-					subMeshWorldMatrix = rotateNeg90Matrix @ rawsubmesh.matrix_world
+					subMeshWorldMatrix = rotateNeg90Matrix @ worldMatrix
 				else:
-					subMeshWorldMatrix = rawsubmesh.matrix_world	
+					subMeshWorldMatrix = worldMatrix	
 					
 				evaluatedSubMeshData.transform(subMeshWorldMatrix)
 				#evaluatedSubMeshData.normals_split_custom_set_from_vertices([vert.normal for vert in evaluatedSubMeshData.vertices])
@@ -2118,7 +2175,7 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 				# RE9 type 6 is UV3. Other supported writers expose only UV0/UV1.
 				uvLimit = 3 if gameName == "RE9" else 2
 				if len(evaluatedSubMeshData.uv_layers) > uvLimit:
-					raiseWarning(f"{rawsubmesh.name}: exporting the first {uvLimit} UV maps supported by {gameName or 'this target'}. {len(evaluatedSubMeshData.uv_layers) - uvLimit} additional reference UV map(s) remain in Blender and are not written to the mesh.")
+					_export_warning(f"{rawsubmesh.name}: exporting the first {uvLimit} UV maps supported by {gameName or 'this target'}. {len(evaluatedSubMeshData.uv_layers) - uvLimit} additional reference UV map(s) remain in Blender and are not written to the mesh.")
 					showWarningMessage = True
 				for uvLayer in list(evaluatedSubMeshData.uv_layers)[:uvLimit]:
 					uvValues = np.empty((len(uvLayer.data), 2), dtype=np.float64)
@@ -2140,7 +2197,29 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 				def _round_tuple(values, places=6):
 					return tuple(round(float(v), places) for v in values)
 
+				ordinaryShading = None
+				if rawsubmesh.get('SF6OrdinaryShadingPayload'):
+					domain = 'CORNER' if splitLoopVertices else 'POINT'
+					prefix = 'c' if splitLoopVertices else 'p'
+					size = len(evaluatedSubMeshData.loops) if splitLoopVertices else len(evaluatedSubMeshData.vertices)
+					ordinaryShading = np.empty((size,7),np.int32)
+					for column in range(7):
+						attribute = evaluatedSubMeshData.attributes.get(f'_sf6_ordinary_{prefix}_{column}')
+						if attribute is None or attribute.domain != domain or attribute.data_type != 'INT' or len(attribute.data) != size:
+							raise ValueError('PROTOTYPE_ORDINARY_SHADING_PROVENANCE_LOST')
+						values = np.empty(size,np.int32)
+						attribute.data.foreach_get('value',values)
+						ordinaryShading[:,column] = values
+					ordinaryNormals = ordinaryShading[:,:3].copy().view(np.float32)
+					if not np.isfinite(ordinaryNormals).all():raise ValueError('PROTOTYPE_INVALID_ORDINARY_SHADING')
+				def _ordinary_loop_normal(loop):
+					if ordinaryShading is None:return loop.normal
+					index = loop.index if splitLoopVertices else loop.vertex_index
+					return Vector(ordinaryNormals[index])
 				def _pack_loop_tangent(loop):
+					if ordinaryShading is not None:
+						index = loop.index if splitLoopVertices else loop.vertex_index
+						return tuple(int(v)&255 for v in ordinaryShading[index,3:])
 					loopTangent = loop.tangent * 1.001 * 127.0
 
 					tx = int(floor(loopTangent[0])) & 0xFF
@@ -2275,7 +2354,7 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 
 							usedOriginalVertexIndices.add(srcVertIndex)
 
-							normal = loop.normal.copy()
+							normal = _ordinary_loop_normal(loop).copy()
 							if normal.length != 0:
 								normal.normalize()
 
@@ -2373,7 +2452,7 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 
 					if exportVertexCount > MAX_VERTICES:
 						parsedMesh.bufferHasIntFaces = True
-						raiseWarning(
+						_export_warning(
 							f"{rawsubmesh.name} exceeded the standard limit of {str(MAX_VERTICES)} vertices. "
 							f"Enabling extended vertex limit of {str(MAX_VERTICES_EXTENDED)}."
 						)
@@ -2481,7 +2560,7 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 						vertex = evaluatedSubMeshData.vertices[currentVertIndex]
 
 						parsedSubMesh.vertexPosList[currentVertIndex] = vertex.co
-						parsedSubMesh.normalList[currentVertIndex] = loop.normal
+						parsedSubMesh.normalList[currentVertIndex] = _ordinary_loop_normal(loop)
 						parsedSubMesh.tangentList[currentVertIndex] = _pack_loop_tangent(loop)
 
 						if meshHasColor:
@@ -2511,7 +2590,7 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 
 					if legacyVertexCount > MAX_VERTICES:
 						parsedMesh.bufferHasIntFaces = True
-						raiseWarning(
+						_export_warning(
 							f"{rawsubmesh.name} exceeded the standard limit of {str(MAX_VERTICES)} vertices. "
 							f"Enabling extended vertex limit of {str(MAX_VERTICES_EXTENDED)}."
 						)
@@ -2615,7 +2694,7 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 				minVec = Vector((min([pos[0] for pos in vecList]),min([pos[1] for pos in vecList]),min([pos[2] for pos in vecList]))) - bonePos
 				maxVec = Vector((max([pos[0] for pos in vecList]),max([pos[1] for pos in vecList]),max([pos[2] for pos in vecList]))) - bonePos
 			else:
-				raiseWarning(f"{boneName} has zero weight vertex groups assigned.")
+				_export_warning(f"{boneName} has zero weight vertex groups assigned.")
 				minVec = Vector((0.0,0.0,0.0))
 				maxVec = Vector((0.01,0.01,0.01))
 			#print(minVec)
@@ -2684,7 +2763,7 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 		addErrorToDict(errorDict, "MaxWeightedBonesExceeded", None)
 	"""
 	if armatureObj != None and len(parsedMesh.skeleton.weightedBones) == 0 and len(parsedMesh.skeleton.boneList) > 0:
-		raiseWarning(f"Mesh has armature, but the mesh is not weighted to the bones on the armature.\nWeighting meshes to {parsedMesh.skeleton.boneList[0].boneName} bone.")
+		_export_warning(f"No bones have assigned weights. Export will bind all vertices to “{parsedMesh.skeleton.boneList[0].boneName}”. Check weights before use.")
 		parsedMesh.skeleton.weightedBones.append(parsedMesh.skeleton.boneList[0].boneName)
 		parsedMesh.skeleton.boneList[0].boundingBox = parsedMesh.boundingBox
 	"""
@@ -2700,6 +2779,11 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 		addErrorToDict(errorDict, "NoMeshesInCollection", None)
 	
 	if errorDict != {}:
+		# Reporting only: preserve actual error codes, objects and validated limits.
+		options["_sf6OrdinaryErrors"] = [dict(code=code, count=entry["count"],
+			objects=sorted(entry["objectSet"]), primary_weight_limit=maxWeightsPerVertex,
+			extended_weight_limit=maxWeightsPerVertexExtended, face_limit=MAX_FACES)
+			for code, entry in sorted(errorDict.items())]
 		#showErrorMessageBox("Mesh contains errors and can not be exported. Check the console (Window > Toggle System Console) for info on how to fix it.")
 		printErrorDict(errorDict)
 		
@@ -2722,9 +2806,10 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 	if originalMaterialTable is not None:
 		newMaterials = preserve_table(parsedMesh, originalMaterialTable)
 		if newMaterials:
-			raiseWarning("New material slots appended; update the matching MDF: " + ", ".join(newMaterials))
+			_export_warning("New materials need matching MDF entries: " + ", ".join(newMaterials))
 	meshWriteStartTime = time.time()
 	progress_stage("Serializing rebuilt mesh buffers", 90)
+	options["_sf6OrdinaryReport"] = dict(normalize_weights_enabled=bool(options.get("normalizeWeights", True)))
 	reMesh = ParsedREMeshToREMesh(parsedMesh, meshVersion, normalizeWeights=options.get("normalizeWeights", True))
 	if targetCollection != None:
 		reMesh.fileHeader.lodGroupNameHash = int(targetCollection.get("LODGroupNameHash","0"))
@@ -2767,7 +2852,7 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 	print(f"Materials ({str(len(parsedMesh.materialNameList))}):")
 	for materialName in parsedMesh.materialNameList:
 		print(materialName)
-	if showWarningMessage and not bpy.app.background:
-		showMessageBox("Warnings occured during export. Check Window > Toggle System Console for details.",title = "Mesh Export Warning", icon = "ERROR")
+	if (showWarningMessage or options.get("_sf6OrdinaryWarnings")) and not bpy.app.background and not options.get("_sf6SuppressExportNotifications", False):
+		showMessageBox("Export completed with warnings. Review the export details before using the file.",title = "Mesh Export Warnings", icon = "INFO")
 	print("\033[92m__________________________________\nRE Mesh export finished.\033[0m")
 	return True

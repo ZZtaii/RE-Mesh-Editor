@@ -104,10 +104,12 @@ def validate_corner_uvs(mesh, part, layers):
         assert stride == 4
         actual = np.frombuffer(mesh.data, "<f2", part["count"] * 2,
                                offset + part["start"] * stride).reshape(-1, 2)
-        wanted = expected.astype("<f2")
+        # The writer flips V before packing to half precision. Rounding
+        # first creates false failures at half-float boundaries.
+        wanted = expected.astype(np.float64)
         wanted[:, :, 1] *= -1
         wanted[:, :, 1] += 1
-        assert np.array_equal(actual[faces], wanted), "Export changed a corner UV"
+        assert np.array_equal(actual[faces], wanted.astype("<f2")), "Export changed a corner UV"
 
 
 def validate_evaluated_corner_normals(mesh, part, evaluated_normals, rotate, sf6):

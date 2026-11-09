@@ -20,6 +20,7 @@ def main():
     sys.path.insert(0, str(repo.parent))
     addon_utils.enable(repo.name, default_set=True)
     addon = importlib.import_module(repo.name)
+    direct = importlib.import_module(repo.name + '.modules.mesh.direct_export_settings')
     preferences = bpy.context.preferences.addons[repo.name].preferences
     preferences.showConsole = False
     collection = bpy.data.collections.new('ExportSettings.mesh')
@@ -54,6 +55,7 @@ def main():
 
     with tempfile.TemporaryDirectory(prefix='meshfix-export-settings-') as temporary:
         root = Path(temporary)
+        direct.settings_path = lambda: root / 'direct_settings.json'
 
         def settings(version, **updates):
             return dict(controls, filepath=str(root / ('output.mesh.' + str(version))),
@@ -69,9 +71,9 @@ def main():
             assert all(options[name] == value for name, value in controls.items()), options
             assert options['exportBlendShapes'] is False and options['sf6HybridPreserve'] is False
             assert not hybrid_reports
-            assert all(collection['BatchExport_' + name] == controls[name]
-                       for name in ('splitLoopVertices', 'limitTotal', 'limitTotalCount', 'normalizeWeights'))
-            print('PASS direct_operator_forwards_and_saves_meshfix_controls', flush=True)
+            assert not saved_fields(), 'Direct export must not overwrite batch settings'
+            assert direct.KEY not in collection, 'Programmatic export must not overwrite dialog settings'
+            print('PASS programmatic_operator_forwards_meshfix_controls_without_overwriting_settings', flush=True)
 
             assert bpy.ops.re_mesh.exportfile('EXEC_DEFAULT', **settings(
                 230110883, exportBlendShapes=True, sf6HybridPreserve=True)) == {'FINISHED'}
@@ -135,7 +137,9 @@ def main():
             cancelled(lambda: bpy.ops.re_mesh.exportfile('EXEC_DEFAULT', **failed_settings),
                       'Controlled export failure')
         assert saved_fields() == successful_fields
-        print('PASS false_and_exception_failures_keep_last_success_settings', flush=True)
+        assert not saved_fields()
+        assert direct.KEY not in collection
+        print('PASS programmatic_failures_leave_dialog_and_batch_settings_unchanged', flush=True)
 
     for extension, expected in (('.230110883', 6), ('.241111606', 12),
                                 ('.260421070', 16), ('.260209350', 12),

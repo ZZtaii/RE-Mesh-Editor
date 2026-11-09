@@ -121,69 +121,18 @@ def addErrorToDict(errorDict,errorType,objectName):
 			errorDict[errorType] = {"count":1,"objectSet":set()}
 		
 errorInfoDict = {
-"NoMeshesInCollection":"""No Meshes In Collection
-No meshes were found in the target collection.
-	
-HOW TO FIX:
-_______________
-	
-Specify a target collection in the export options that contains meshes, or leave it blank and move your meshes and armature into the Scene Collection.
-""",
+"NoMeshesInCollection":'No meshes to export\nChoose a target collection containing meshes. If Selected Objects Only is enabled, select meshes in that collection or turn it off.',
 
-"MoreThanOneArmature":"""More Than One Armature
-More than one armature was found in the target collection. Only one armature can be present in a mesh collection. 
-	
-HOW TO FIX:
-_______________
-	
-Move the extra armature into another collection or delete it. 
-""",
-"NoMaterialOnSubMesh":"""No Material On Sub Mesh
-A mesh has no material assigned to it. All meshes must have one material assigned to them.
-	
-HOW TO FIX:
-_______________
-	
-Specify an MDF material name on the end of the object name separated by two underscores. See example, here the material name is "pl1000_Body_Mat".
+"MoreThanOneArmature":'More than one target armature\nThis collection needs exactly one target armature. Move extra armatures out of the export collection.',
+"NoMaterialOnSubMesh":'Missing material\nAssign a material to every used section. If exporting material names from object names, include the MDF material name after two underscores.',
 
-Example Object Name: LOD_0_Group_0_Sub_0__pl1000_Body_Mat
-""",
+"MoreThanOneMaterialOnSubMesh":'Multiple materials on one submesh\nThis export path requires one material per submesh. Split this mesh by material before retrying.',
 
-"MoreThanOneMaterialOnSubMesh":"""More Than One Material On Sub Mesh
-A mesh has more than one material assigned to it. All meshes must have only one material assigned to them.
-	
-HOW TO FIX:
-_______________
-	
-Select the listed mesh in edit mode, press A to select all vertices. Then press P > Material to split the mesh by it's materials.
-""",
+"NoUVMapOnSubMesh":'Missing UV map\nAdd a UV map and unwrap the mesh.',
 
-"NoUVMapOnSubMesh":"""No UV Map On Sub Mesh
-A mesh has no UV map. All meshes require at least one uv map.
-	
-HOW TO FIX:
-_______________
-	
-Create a UV map.
-""",
+"NoVerticesOnSubMesh":'No vertices\nAdd valid geometry, exclude this object from export, or remove it if unneeded.',
 
-"NoVerticesOnSubMesh":"""No Vertices On Sub Mesh
-A mesh has no vertices. All meshes must have at least 3 vertices and 1 face.
-	
-HOW TO FIX:
-_______________
-	
-Delete the listed mesh.
-""",
-
-"NoFacesOnSubMesh":"""No Faces On Sub Mesh
-A mesh has no faces. All meshes must have at least 3 vertices and 1 face.
-	
-HOW TO FIX:
-_______________
-	
-Delete the listed mesh.
-""",
+"NoFacesOnSubMesh":'No faces\nAdd valid geometry, exclude this object from export, or remove it if unneeded.',
 
 "LooseVerticesOnSubMesh":"""Loose Vertices On Sub Mesh
 A mesh has loose vertices with no faces assigned.
@@ -235,28 +184,9 @@ OR
 
 Use the decimate modifier to reduce mesh quality.
 """,
-"MaxFacesExceeded":"""Max Faces Exceeded On Sub Mesh
-A mesh exceeded the limit of 4294967295 faces.
-	
-HOW TO FIX:
-_______________
-	
-Reconsider the life choices that led you to decide to try to export a mesh with 4 million faces.
-""",
+"MaxFacesExceeded":'Too many faces\nToo many faces for this format. Split the object or reduce its face count. The format limit is 4294967295 faces.',
 
-"MaxWeightsPerVertexExceeded":"""Max Weights Per Vertex Exceeded On Sub Mesh
-A vertex has more the maximum of 8 (or 6 for SF6) weights assigned to it.
-	
-HOW TO FIX:
-_______________
-	
-Limit total weights to 8 in weight paint mode and normalize all weights from the Weights menu.
-
-OR
-
-Use the "Limit Total and Normalize All Weights" button in the RE Mesh tab.
-
-""",
+"MaxWeightsPerVertexExceeded":'Too many bone weights per vertex\nReduce the number of influences to the target format’s primary weight limit, then normalize valid weights. See the export details for the actual limit.',
 
 
 "MaxPrimaryWeightsPerVertexExceeded":"""DD2 Primary Weights Per Vertex Exceeded
@@ -275,19 +205,7 @@ _______________
 Limit SHAPEKEY_ weights to 8 on this mesh. Primary weight arrays do not count towards the secondary weight array's limit.
 """,
 
-"ExtendedMaxWeightsPerVertexExceeded":"""Extended Max Weights Per Vertex Exceeded On Sub Mesh
-A vertex has more the maximum of 16 (or 12 for SF6 and MH Wilds) weights assigned to it.
-	
-HOW TO FIX:
-_______________
-	
-Limit total weights to 16 in weight paint mode and normalize all weights from the Weights menu.
-
-OR
-
-Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
-
-""",
+"ExtendedMaxWeightsPerVertexExceeded":'Too many bone weights per vertex\nReduce the number of influences to the target format’s extended weight limit, then normalize valid weights. See the export details for the actual limit.',
 
 "NoBonesOnArmature":"""No Bones on Armature
 The armature in the target collection has no bones.
@@ -310,14 +228,7 @@ You can do this by selecting the armature in the outliner and dragging it onto t
 
 """,
 
-"NoWeightsOnMesh":"""No Weights on Sub Mesh
-A mesh has an armature, but no weights assigned to bones.
-	
-HOW TO FIX:
-_______________
-	
-Add a new vertex group and weight it to a bone on the armature in weight paint mode.
-""",
+"NoWeightsOnMesh":'Missing bone weights\nAssign valid positive bone weights to every vertex. Weighted groups must match bones on the target armature. Normalize All alone does not repair unweighted vertices.',
 "MaxWeightedBonesExceeded":"""Max Weighted Bones Exceeded
 The mesh exceeded the limit of 256 bones with weights assigned to them.
 	
@@ -326,19 +237,7 @@ _______________
 	
 Reduce the amount of chain bones on the armature.
 """,
-"InvalidWeights":"""Invalid Weighting
-A submesh contains invalid weights and can't be exported.
-	
-HOW TO FIX:
-_______________
-	
-Check that the armature is inside the mesh collection.
-
-Also check that all bones that are being weighted to are on the armature.
-
-Be sure to limit total weights to 6, normalize all, and remove unweighted vertex groups.
-
-""",
+"InvalidWeights":'Invalid bone weights\nAssign valid positive bone weights to every vertex. Weighted groups must match bones on the target armature, and the armature must be in the export collection. Normalize valid weights after correcting missing or invalid assignments.',
 	}
 	
 def printErrorDict(errorDict):

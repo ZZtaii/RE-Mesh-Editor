@@ -7,6 +7,7 @@ explicit Blender deltas on rebuilt vertices are encoded; absent deltas are zero.
 It does not claim to preserve the original source layout or lower LODs.
 """
 
+from .sf6_mode_snapshot import logical_name
 import base64
 import binascii
 import hashlib
@@ -126,7 +127,7 @@ def _scene_objects(collection, source, source_hash, source_parts, selected=None,
         _need(obj.mode == 'OBJECT', 'leave Edit Mode before exporting ' + obj.name)
         raw = obj.get('SF6SourceMeta')
         if collection.get('SF6AutomaticHybrid') and obj.get('SF6AutomaticOrdinaryPart'):
-            match = re.fullmatch(r'Group_(\d+)_Sub_(\d+)__(.+?)(?:\.\d{3})?', obj.name)
+            match = re.fullmatch(r'Group_(\d+)_Sub_(\d+)__(.+?)(?:\.\d{3})?', logical_name(obj))
             _need(match is not None, 'invalid automatic part name: '+obj.name)
             key = int(match[1]), match[3]
             no_source.add(key)
@@ -138,7 +139,7 @@ def _scene_objects(collection, source, source_hash, source_parts, selected=None,
         elif raw is None and obj.get('SF6SourceSHA256') is None:
             # A replacement object can lack any retail metadata.  The exact
             # importer-style name is the only safe bridge to an ordinary part.
-            match = re.fullmatch(r'Group_(\d+)_Sub_(\d+)__(.+?)(?:\.\d{3})?', obj.name)
+            match = re.fullmatch(r'Group_(\d+)_Sub_(\d+)__(.+?)(?:\.\d{3})?', logical_name(obj))
             _need(match is not None,
                   'no-source object needs its original Group/Sub/material name: ' + obj.name)
             group, sub, material = int(match[1]), int(match[2]), match[3]
@@ -908,6 +909,12 @@ def _verify_result(source, ordinary, result, source_parts, ordinary_parts,
         actual=next(p for p in final.parts if _part_key(final,p)==key)
         _need(np.array_equal(ordinary.faces(new),final.faces(actual)), 'added part triangles changed')
         _need(not list(final.part_shapes(actual)), 'unverified added part received shape links')
+    if normal_vertex is None:
+        _need(normal_face is None and not source.blend_offset and not final.blend_offset and
+              _read(source.data, 'Q', 56)[0] == 0 and _read(result, 'Q', 56)[0] == 0 and
+              result == ordinary.data,
+              'geometry-only output must exactly retain verified ordinary bytes without shapes or recalc data')
+        return final
     header = _read(result, 'Q', 56)[0]
     _need(header != 0 and _read(result, 'Q', header)[0] == 1,
           'hybrid normal table missing')
@@ -976,9 +983,6 @@ def build_hybrid_mesh(source_bytes, ordinary_bytes, collection, selected_objects
     ordinary = sf6_source.SourceMesh(ordinary_bytes)
     _need(source.lod_count >= 1 and ordinary.lod_count == 1,
           'hybrid export currently supports an ordinary single-LOD output')
-    if selected is None and not excluded_shapes:
-        _need(source.blend_offset and source.shapes[0],
-              'nothing to preserve: retail source has no LOD0 shapes')
     _need(not ordinary.blend_offset,
           'ordinary input already has a shape table')
     _need(_read(ordinary_bytes, 'Q', 56)[0] == 0,
@@ -1020,7 +1024,7 @@ def build_hybrid_mesh(source_bytes, ordinary_bytes, collection, selected_objects
 
     progress_stage("Building corrective-shape tables", 80)
     out = bytearray(ordinary_bytes)
-    if source.blend_offset:
+    if source.shapes[0]:
         (delta, shape_count, targets, extras, preserved_entries,
          transferred_entries, edited_entries, edited_by_part,
          expanded_bounds) = _build_shape_table(
@@ -1029,8 +1033,10 @@ def build_hybrid_mesh(source_bytes, ordinary_bytes, collection, selected_objects
         _append_shape_names(source, ordinary, out, shape_count)
         shaped = _append_shape_gpu(ordinary, out, delta)
     else:
-        _need((selected is not None or excluded_shapes) and not source.shapes[0],
-              'nothing to preserve: retail source has no LOD0 shapes')
+        # A no-corrective source (for example a facial mesh) still benefits
+        # from the evaluated/atomic geometry path and normal-table rebuild.
+        # Do not invent shape tables or reject valid geometry merely because
+        # there are no LOD0 source targets to attach.
         shape_count = targets = extras = preserved_entries = 0
         transferred_entries = edited_entries = expanded_bounds = 0
         edited_by_part = {}
@@ -1039,9 +1045,17 @@ def build_hybrid_mesh(source_bytes, ordinary_bytes, collection, selected_objects
         part['edited_source_shape_delta_entries'] = edited_by_part.get(
             (part['group'], part['material']), 0)
     progress_stage("Building normal-recalculation tables", 88)
-    normal_vertex, normal_face, copied, rebuilt, stub_exceptions = _normal_table(
-        source, shaped, source_parts, ordinary_parts, mapped, objects)
-    _append_normal_table(shaped, out, normal_vertex, normal_face)
+    # Gate on the original, not a selected shape-free subset of a shaped file.
+    # This path retains verified Ordinary bytes; it does not reconstruct metadata.
+    geometry_only_missing_table = (not original.blend_offset and
+                                   _read(original.data, 'Q', 56)[0] == 0)
+    if geometry_only_missing_table:
+        normal_vertex = normal_face = None
+        copied = rebuilt = stub_exceptions = []
+    else:
+        normal_vertex, normal_face, copied, rebuilt, stub_exceptions = _normal_table(
+            source, shaped, source_parts, ordinary_parts, mapped, objects)
+        _append_normal_table(shaped, out, normal_vertex, normal_face)
     result = bytes(out)
     progress_stage("Verifying final hybrid buffers", 94)
     _verify_result(source, ordinary, result, source_parts, ordinary_parts,
@@ -1070,6 +1084,7 @@ def build_hybrid_mesh(source_bytes, ordinary_bytes, collection, selected_objects
              original_parts[key]['start'] in excluded_shapes]),
         'selected_only': selected is not None,
         'output_shape_links': shape_count,
+        'no_source_shapes': not bool(source.shapes[0]),
         'shape_targets': targets,
         'zero_shape_descriptors': extras,
         'source_shape_delta_entries_retained': preserved_entries,
@@ -1081,7 +1096,8 @@ def build_hybrid_mesh(source_bytes, ordinary_bytes, collection, selected_objects
         'transferred_vertices': sum(part['transferred_vertices'] for part in parts_report),
         'source_triangles': sum(part['source_triangles'] for part in parts_report),
         'rebuilt_triangles': sum(part['rebuilt_triangles'] for part in parts_report),
-        'normal_table_rebuilt': True,
+        'normal_table_rebuilt': not geometry_only_missing_table,
+        'geometry_only_missing_source_normal_table': geometry_only_missing_table,
         'normal_parts_copied': [material for _, material in copied],
         'normal_parts_rebuilt': [material for _, material in rebuilt],
         'normal_exact_stub_exceptions': [material for _, material in stub_exceptions],

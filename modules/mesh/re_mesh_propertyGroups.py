@@ -1,6 +1,7 @@
 #Author: NSA Cloud
 import bpy
 import os
+import json
 from bpy.props import (StringProperty,
 					   BoolProperty,
 					   IntProperty,
@@ -36,6 +37,41 @@ def getBatchMeshWeightLimit(item):
 	if hasattr(item, "is_property_set") and not item.is_property_set("limitTotalCount"):
 		return getBatchMeshWeightLimitDefault(item.path)
 	return getattr(item, "limitTotalCount", getBatchMeshWeightLimitDefault(item.path))
+
+
+def _remember_batch_edit(self, name):
+	if getattr(self, 'sf6BatchInitializing', False):
+		return
+	try:
+		explicit = json.loads(self.sf6BatchExplicitFields)
+	except (ValueError, TypeError):
+		explicit = []
+	if not isinstance(explicit, list):
+		explicit = []
+	self.sf6BatchExplicitFields = json.dumps(sorted(set(explicit) | {name}))
+
+
+def update_batchPreserveSource(self, _context):
+	# Population marks malformed stored values after its initial assignment.
+	self.sf6BatchPreserveReviewRequired = False
+	_remember_batch_edit(self, 'exportBlendShapes')
+
+
+def update_batchIntent(name):
+	def update(self, _context):
+		_remember_batch_edit(self, name)
+	return update
+
+
+def update_batchUnifiedRequest(self, _context):
+	if not getattr(self, 'sf6BatchInitializing', False):
+		from .sf6_export_settings import apply_batch_new_profile_defaults
+		apply_batch_new_profile_defaults(self, bpy.data.collections.get(self.name))
+
+
+def update_batchLodChoice(self, _context):
+	if not getattr(self, 'sf6BatchInitializing', False):
+		self.sf6LodPolicy = self.sf6LodChoice
 
 
 def update_batchWeightLimit(self, _context):
@@ -119,6 +155,35 @@ class ExporterNodePropertyGroup(bpy.types.PropertyGroup):
 		default = False
 	)
 
+	# Prototype-only inputs. Persisted workflow choices live in an independent
+	# collection namespace; review tokens and results never become presets.
+	sf6BatchInitializing: BoolProperty(name="sf6BatchInitializing", default=False,
+		options={'HIDDEN', 'SKIP_SAVE'})
+	sf6BatchExplicitFields: StringProperty(name="sf6BatchExplicitFields", default="[]",
+		options={'HIDDEN', 'SKIP_SAVE'})
+	sf6BatchPreserveReviewRequired: BoolProperty(name="sf6BatchPreserveReviewRequired", default=False,
+		options={'HIDDEN', 'SKIP_SAVE'})
+	sf6ReviewOnly: BoolProperty(name="sf6ReviewOnly", default=False,
+		options={'HIDDEN', 'SKIP_SAVE'})
+	sf6UnifiedOptIn: BoolProperty(name="sf6UnifiedOptIn", default=False,
+		options={'HIDDEN', 'SKIP_SAVE'}, update=update_batchUnifiedRequest)
+	sf6ExportWorkflow: StringProperty(name="sf6ExportWorkflow", default="",
+		options={'HIDDEN'}, update=update_batchUnifiedRequest)
+	sf6LodChoice: EnumProperty(name="LOD Export", items=(
+		('retain_if_compatible', 'Keep compatible source LODs', 'Keep source LODs when the unchanged source output is compatible; rebuilt output may contain only LOD0'),
+		('lod0', 'LOD0 only', 'Export only the highest-detail mesh level')),
+		default='retain_if_compatible', options={'SKIP_SAVE'}, update=update_batchLodChoice)
+	sf6LodPolicy: StringProperty(name="sf6LodPolicy", default="",
+		options={'HIDDEN'})
+	sf6RigPolicy: StringProperty(name="sf6RigPolicy", default="auto",
+		options={'HIDDEN', 'SKIP_SAVE'})
+	sf6ApprovedCorrectiveLosses: StringProperty(name="sf6ApprovedCorrectiveLosses", default="[]",
+		options={'HIDDEN', 'SKIP_SAVE'})
+	sf6ExpectedPlan: StringProperty(name="sf6ExpectedPlan", default="",
+		options={'HIDDEN', 'SKIP_SAVE'})
+	sf6UnifiedResult: StringProperty(name="sf6UnifiedResult", default="",
+		options={'HIDDEN', 'SKIP_SAVE'})
+
 	#mesh operator arguments
 	
 	exportAllLODs : BoolProperty(
@@ -126,9 +191,9 @@ class ExporterNodePropertyGroup(bpy.types.PropertyGroup):
 	   description = "Export all LODs. If disabled, only LOD0 will be exported. Note that LODs meshes must be grouped inside a collection for each level and that collection must be contained in another collection. See a mesh with LODs imported for reference on how it should look. A target collection must also be set",
 	   default = True)
 	exportBlendShapes : BoolProperty(
-	   name = "SF6: Preserve Source Data",
-	   description = "Batch export only. Off by default and independent of mod folder export. Enable to preserve supported SF6 source data from an original imported with Preserve Source + Shape Keys",
-	   default = False)
+	   name = "Preserve Compatible Source Data",
+	   description = "Keep verified source corrective shapes where compatible. Required shape-key losses are reviewed before export",
+	   default = False, update=update_batchPreserveSource)
 	rotate90 : BoolProperty(
 	   name = "Convert Z Up To Y Up",
 	   description = "Rotates objects 90 degrees for export. Leaving this option enabled is recommended",
@@ -136,15 +201,15 @@ class ExporterNodePropertyGroup(bpy.types.PropertyGroup):
 	autoSolveRepeatedUVs : BoolProperty(
 	   name = "Auto Solve Repeated UVs",
 	   description = "Splits connected UV islands if present. The mesh format does not allow for multiple uvs assigned to a vertex.\nNOTE: This will modify the object and may slightly increase time taken to export",
-	   default = True)
+	   default = True, update=update_batchIntent("autoSolveRepeatedUVs"))
 	preserveSharpEdges : BoolProperty(
 	   name = "Split Sharp Edges",
 	   description = "Edge splits all edges marked as sharp to preserve them on the exported mesh.\nNOTE: This will modify the exported mesh",
-	   default = True)
+	   default = True, update=update_batchIntent("preserveSharpEdges"))
 	splitLoopVertices : BoolProperty(
 	   name = "Split Vertices For Corner Attributes",
 	   description = "Create exported vertices when corner normals, tangents, UVs, or colors differ. Disable to keep one exported vertex per Blender vertex",
-	   default = True)
+	   default = True, update=update_batchIntent("splitLoopVertices"))
 	limitTotal : BoolProperty(
 	   name = "Limit Total",
 	   description = "Limit bone influences on export. Enable Normalize Weights to renormalize the remaining weights",
@@ -176,7 +241,7 @@ class ExporterNodePropertyGroup(bpy.types.PropertyGroup):
 	preserveBoneMatrices : BoolProperty(
 	   name = "Preserve Bone Matrices",
 	   description = "Export using the original matrices of the imported bones. Note that this option only applies armatures imported with this addon. Any newly added bones will have new matrices calculated",
-	   default = False)
+	   default = False, update=update_batchIntent("preserveBoneMatrices"))
 	exportBoundingBoxes : BoolProperty(
 	   name = "Export Bounding Boxes",
 	   description = "Exports the original bounding boxes from the \"Import Bounding Boxes\" import option. New bounding boxes will be generated for any bones that do not have them",

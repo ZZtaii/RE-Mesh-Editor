@@ -1,6 +1,10 @@
 #Author: NSA Cloud
 import bpy
 import os
+import json
+import hashlib
+from copy import deepcopy
+from types import SimpleNamespace
 import textwrap
 from bpy.types import Operator
 
@@ -14,7 +18,8 @@ from bpy.props import (StringProperty,
 from .blender_re_mesh import solveRepeatedUVs
 from .re_mesh_propertyGroups import (ExporterNodePropertyGroup, MESH_UL_REExporterList,
 	getBatchMeshWeightLimitDefault, getBatchMeshWeightLimit, setBatchMeshWeightLimit)
-from .sf6_export_settings import BATCH_PRESERVE_SOURCE, batch_preserve_source
+from .sf6_export_settings import (BATCH_PRESERVE_SOURCE, BATCH_LOD_POLICY, BATCH_PROCESSING_FIELDS, batch_preserve_source,
+	load_batch_workflow, batch_uses_unified_view, apply_batch_new_profile_defaults)
 from ..gen_functions import splitNativesPath
 from ..blender_utils import showErrorMessageBox
 
@@ -28,6 +33,368 @@ _BATCH_MESH_FIX_DEFAULTS = {
 	"shapeKeyExportMode": "MODE0",
 }
 
+
+_BATCH_OPTION_DEFAULTS = {
+    'selectedOnly': False, 'exportAllLODs': True, 'exportBlendShapes': False,
+    'autoSolveRepeatedUVs': True, 'preserveSharpEdges': True,
+    'splitLoopVertices': True, 'normalizeWeights': True, 'limitTotal': False,
+    'limitTotalCount': 8, 'shapeKeyExportMode': 'MODE0', 'rotate90': True,
+    'useBlenderMaterialName': False, 'preserveBoneMatrices': False,
+    'exportBoundingBoxes': False,
+}
+_LAST_BATCH_REVIEW = None
+_LAST_BATCH_RESULT = None
+
+
+def _batch_digest(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False,
+                                     allow_nan=False).encode('utf8')).hexdigest()
+
+
+def _batch_profile(collection):
+    if collection is None:
+        return None
+    keys = ((BATCH_PRESERVE_SOURCE, 'SF6BatchExportWorkflowV1', 'SF6BatchExportLodPolicyV1',
+             'BatchExport_path', 'BatchExport_enabled') +
+            tuple('BatchExport_' + field for field in BATCH_PROCESSING_FIELDS))
+    return {key: collection[key] for key in keys if key in collection}
+
+
+def _batch_payload(operator):
+    entries = []
+    for index, item in enumerate(operator.itemList_items):
+        if item.hasChild or not item.enabled or not item.exportType:
+            continue
+        owner = (bpy.data.objects.get(item.name) if item.exportType == 'FBXSKEL'
+                 else bpy.data.collections.get(item.name))
+        row = dict(entry_id=str(index), name=item.name, path=item.path,
+                   export_type=item.exportType, invalid=bool(item.invalid), enabled=True,
+                   owner_pointer=owner.as_pointer() if owner is not None else None,
+                   saved_profile=_batch_profile(owner))
+        row['options'] = {key: getattr(item, key, default)
+                          for key, default in _BATCH_OPTION_DEFAULTS.items()}
+        row['options']['limitTotalCount'] = getBatchMeshWeightLimit(item)
+        row['options']['targetCollection'] = item.name
+        row['options']['selectedOnly'] = False
+        row['options']['sf6RigPolicy'] = getattr(item, 'sf6RigPolicy', 'auto')
+        for key in ('sf6ExportWorkflow', 'sf6LodPolicy'):
+            if getattr(item, key, ''):
+                row['options'][key] = getattr(item, key)
+        row['preserve_review_required'] = bool(getattr(item, 'sf6BatchPreserveReviewRequired', False))
+        entries.append(row)
+    return dict(schema=1, scope='batch', entries=entries)
+
+
+def _batch_failure(error=None, *, reason=None, publication_started=False):
+    report = deepcopy(getattr(error, 'report', None) or getattr(error, 'plan', None) or {})
+    if not isinstance(report, dict):
+        report = {}
+    report.update(status='not_committed', publication_started=publication_started)
+    if reason:
+        report['reason'] = reason
+    if error is not None:
+        report.update(error_code=type(error).__name__, error_detail=str(error))
+        if getattr(error, 'conflicts', None):
+            report['conflicts'] = deepcopy(error.conflicts)
+    return report
+
+
+def _batch_file(row, report):
+    return dict(entry_id=row['entry_id'], file=row['path'], path=row['path'], target_collection=row['name'],
+                export_type=row['export_type'], result=deepcopy(report),
+                status=report.get('status', 'unverified'))
+
+
+def _batch_summary(files):
+    total = len(files)
+    succeeded = sum(row['status'] == 'committed' for row in files)
+    pending = sum(row['status'] in ('pending', 'review_pending', 'running') for row in files)
+    failed = total - succeeded - pending
+    status = ('committed' if succeeded == total and total else
+              'partially_committed' if succeeded else 'pending' if pending else 'not_committed')
+    return dict(schema=1, scope='batch', status=status, total_count=total,
+                succeeded_count=succeeded, completed_count=succeeded, failed_count=failed,
+                pending_count=pending, files=files, items=files,
+                publication_started=any(row['result'].get('publication_started',
+                                                        row['status'] == 'committed') for row in files))
+
+
+def _batch_commit(row, options):
+    from .sf6_unified_ui import commit_batch_settings
+    owner = (bpy.data.objects.get(row['name']) if row['export_type'] == 'FBXSKEL'
+             else bpy.data.collections.get(row['name']))
+    if owner is None or owner.as_pointer() != row['owner_pointer']:
+        raise ValueError('BATCH_OWNER_CHANGED_AFTER_EXPORT')
+    owner['BatchExport_enabled'] = True
+    owner['BatchExport_path'] = row['path']
+    if row['export_type'] != 'MESH':
+        return
+    for key in _BATCH_OPTION_DEFAULTS:
+        if key not in ('selectedOnly', 'exportBlendShapes'):
+            owner['BatchExport_' + key] = options.get(key, _BATCH_OPTION_DEFAULTS[key])
+    if row['path'].endswith('.mesh.230110883'):
+        owner[BATCH_PRESERVE_SOURCE] = bool(options['exportBlendShapes'])
+        # Ordinary export deliberately keeps no unified workflow marker. Save
+        # its visible LOD choice through the legacy field used on the next load.
+        if not options['exportBlendShapes'] and options.get('sf6LodPolicy') in ('lod0', 'retain_if_compatible'):
+            owner['BatchExport_exportAllLODs'] = options['sf6LodPolicy'] != 'lod0'
+        commit_batch_settings(owner, options)
+
+
+class BatchExportReview:
+    """One immutable batch review; publication remains atomic per SF6 file."""
+    def __init__(self):
+        self.prepared = {}
+        self.review = None
+        self.payload_digest = None
+        self.rig_files = set()
+
+    def _options(self, row, overrides):
+        from . import sf6_unified_ui as ui
+        options = deepcopy(row['options'])
+        collection = bpy.data.collections.get(row['name'])
+        options = ui.resolve_batch_options(collection, options, mesh_version=230110883,
+                                           enable_unified=True)
+        operator = SimpleNamespace(sf6RigPolicy=row['options'].get('sf6RigPolicy', 'auto'),
+            sf6ApprovedCorrectiveLosses='[]', sf6ExpectedPlan='', sf6SettingsScope='batch')
+        options = ui.apply_review_inputs(operator, options)
+        prefix = row['entry_id'] + ':'
+        owners = {key[len(prefix):]: value for key, value in
+                  overrides.get('_sf6PreserveSourceOwners', {}).items() if key.startswith(prefix)}
+        if owners:
+            options['_sf6PreserveSourceOwners'] = owners
+        if row['entry_id'] in self.rig_files and 'preserveBoneMatrices' in overrides:
+            options['preserveBoneMatrices'] = overrides['preserveBoneMatrices']
+        return options
+
+    def prepare(self, payload, overrides):
+        from .sf6_review_plan import prepare_review
+        from .blender_re_mesh import exportREMeshFile
+        files, losses, tokens, owners, retained, conflicts = [], [], [], [], [], []
+        prepared = {}
+        destinations = {}
+        for row in payload['entries']:
+            key = os.path.normcase(os.path.abspath(row['path']))
+            destinations.setdefault(key, []).append(row['entry_id'])
+        for row in payload['entries']:
+            entry_id = row['entry_id']
+            owner = (bpy.data.objects.get(row['name']) if row['export_type'] == 'FBXSKEL'
+                     else bpy.data.collections.get(row['name']))
+            try:
+                if owner is None or owner.as_pointer() != row['owner_pointer']:
+                    raise ValueError('BATCH_EXPORT_TARGET_CHANGED')
+                if row['invalid'] or not row['path']:
+                    raise ValueError('BATCH_INVALID_EXPORT_PATH')
+                if len(destinations[os.path.normcase(os.path.abspath(row['path']))]) > 1:
+                    raise ValueError('BATCH_DUPLICATE_DESTINATION')
+                sf6 = row['export_type'] == 'MESH' and row['path'].endswith('.mesh.230110883')
+                if sf6:
+                    if row['preserve_review_required']:
+                        from .sf6_unified_ui import SettingsReviewRequired, review_report
+                        raise SettingsReviewRequired(review_report(['invalid_preservation_value'], scope='batch'))
+                    options = self._options(row, overrides)
+                    ancestor = os.path.dirname(os.path.abspath(row['path']))
+                    while not os.path.isdir(ancestor):
+                        parent = os.path.dirname(ancestor)
+                        if parent == ancestor:
+                            raise ValueError('BATCH_OUTPUT_DIRECTORY_UNAVAILABLE')
+                        ancestor = parent
+                    review = prepare_review(row['path'], options, exportREMeshFile, staging_directory=ancestor)
+                else:
+                    if row['export_type'] not in ('MESH', 'MDF', 'FBXSKEL', 'CHAIN', 'CHAIN2', 'CLSP', 'SFUR'):
+                        raise ValueError('BATCH_UNSUPPORTED_FORMAT')
+                    if row['export_type'] in ('CHAIN', 'CHAIN2', 'CLSP') and not hasattr(bpy.types, 'OBJECT_PT_chain_object_mode_panel'):
+                        raise ValueError('BATCH_CHAIN_EDITOR_UNAVAILABLE')
+                    options = deepcopy(row['options'])
+                    review = dict(status='ready', complete=True,
+                        plan_token=_batch_digest(row), output_sha256=None, losses=[],
+                        approved_loss_tokens=[], duplicate_groups=[], retained_sections=[],
+                        report=dict(status='validation_deferred', reason='format_validated_during_export'))
+                prepared[entry_id] = dict(row=deepcopy(row), options=options, review=review, sf6=sf6)
+                report = dict(review.get('report', {}), status=review['status'],
+                              complete=review.get('complete', False))
+                files.append(_batch_file(row, report))
+                prefix = entry_id + ':'
+                for event in review.get('losses', []):
+                    event = deepcopy(event)
+                    event.update(file=row['path'], destination=row['path'], entry_id=entry_id, selected_only=False)
+                    event['loss_token'] = prefix + event['loss_token']
+                    if 'covered_loss_tokens' in event:
+                        event['covered_loss_tokens'] = [prefix + token for token in event['covered_loss_tokens']]
+                    losses.append(event)
+                tokens.extend(prefix + token for token in review.get('approved_loss_tokens', []))
+                for group in review.get('duplicate_groups', []):
+                    group = deepcopy(group)
+                    group.update(file=row['path'], entry_id=entry_id)
+                    group['source_key'] = prefix + group['source_key']
+                    owners.append(group)
+                retained.extend(dict(section, file=row['path'], entry_id=entry_id)
+                                for section in review.get('retained_sections', []))
+            except Exception as error:
+                report = _batch_failure(error)
+                for conflict in report.get('conflicts', []):
+                    conflicts.append(dict(conflict, file=row['path'], entry_id=entry_id))
+                    self.rig_files.add(entry_id)
+                prepared[entry_id] = dict(row=deepcopy(row), error=report)
+                files.append(_batch_file(row, report))
+        ready = sum(item.get('review', {}).get('status') == 'ready' for item in prepared.values())
+        needs_owner = any(item.get('review', {}).get('status') == 'needs_owner_choice' for item in prepared.values())
+        status = 'needs_policy_choice' if conflicts else 'needs_owner_choice' if needs_owner else 'ready' if ready else 'blocked'
+        identity = [dict(entry_id=k, plan=v.get('review', {}).get('plan_token'),
+                         output=v.get('review', {}).get('output_sha256'), error=v.get('error'))
+                    for k, v in prepared.items()]
+        review = dict(schema=1, status=status, complete=status == 'ready', selected_only=False,
+                      plan_token=_batch_digest([payload, identity, overrides]),
+                      output_sha256=_batch_digest(identity), losses=losses,
+                      approved_loss_tokens=sorted(tokens), requires_loss_approval=bool(tokens),
+                      duplicate_groups=owners, retained_sections=retained, conflicts=conflicts,
+                      files=files, report=dict(scope='batch', files=files,
+                          total_count=len(files), ready_count=ready,
+                          failed_count=sum('error' in v for v in prepared.values())))
+        self.prepared, self.review = prepared, deepcopy(review)
+        self.payload_digest = _batch_digest(payload)
+        return review
+
+    def publish(self, payload, overrides):
+        from .blender_re_mesh import exportREMeshFile
+        if self.review is None or self.review['status'] != 'ready' or _batch_digest(payload) != self.payload_digest:
+            raise ValueError('BATCH_REVIEW_REQUIRED')
+        if (overrides.get('_sf6UnifiedExpectedPlan') != self.review['plan_token'] or
+                overrides.get('_sf6UnifiedExpectedOutputSHA256') != self.review['output_sha256'] or
+                set(overrides.get('_sf6ApprovedCorrectiveLosses', [])) != set(self.review['approved_loss_tokens'])):
+            raise ValueError('UNIFIED_STALE_PLAN')
+        files = []
+        for row in payload['entries']:
+            prepared = self.prepared[row['entry_id']]
+            if 'error' in prepared:
+                files.append(_batch_file(row, prepared['error']))
+                continue
+            options = deepcopy(prepared['options'])
+            started = False
+            try:
+                os.makedirs(os.path.dirname(os.path.abspath(row['path'])), exist_ok=True)
+                started = True
+                if prepared['sf6']:
+                    review = prepared['review']
+                    options['_sf6UnifiedExpectedPlan'] = review['plan_token']
+                    options['_sf6UnifiedExpectedOutputSHA256'] = review['output_sha256']
+                    prefix = row['entry_id'] + ':'
+                    options['_sf6ApprovedCorrectiveLosses'] = [token[len(prefix):] for token in
+                        overrides['_sf6ApprovedCorrectiveLosses'] if token.startswith(prefix)]
+                    if not exportREMeshFile(row['path'], options):
+                        raise ValueError('SF6_BACKEND_FAILED')
+                    report = deepcopy(options.get('_sf6UnifiedReport', {}))
+                    if report.get('status') != 'committed':
+                        raise ValueError('SF6_PUBLICATION_UNCONFIRMED')
+                else:
+                    names = dict(MESH='re_mesh', MDF='re_mdf', FBXSKEL='re_fbxskel',
+                                 CHAIN='re_chain', CHAIN2='re_chain2', CLSP='re_clsp', SFUR='re_sfur')
+                    arguments = dict(filepath=row['path'])
+                    arguments['targetArmature' if row['export_type'] == 'FBXSKEL' else 'targetCollection'] = row['name']
+                    if row['export_type'] == 'MESH':
+                        arguments.update({key: options[key] for key in _BATCH_OPTION_DEFAULTS if key != 'selectedOnly'})
+                        arguments['sf6SettingsScope'] = 'batch'
+                    result = getattr(bpy.ops, names[row['export_type']]).exportfile(**arguments)
+                    if 'FINISHED' in result:
+                        report = dict(status='committed', publication_confirmation='operator_finished')
+                    elif result & {'INTERFACE', 'RUNNING_MODAL'}:
+                        report = dict(status='pending', reason='operator_not_completed', operator_result=sorted(result))
+                    else:
+                        report = dict(status='not_committed', reason='operator_cancelled', operator_result=sorted(result))
+                report.update(publication_started=started, destination=row['path'])
+                if report.get('dropped_source_lods'):
+                    report.setdefault('warnings', []).append('Lower source LODs were not exported.')
+                backend = report.get('backend_report') or {}
+                added = backend.get('added_materials', []) if isinstance(backend, dict) else []
+                if added:
+                    report.setdefault('warnings', []).append('New materials need matching MDF entries: ' + ', '.join(map(str, added)) + '.')
+                if report['status'] == 'committed':
+                    try:
+                        _batch_commit(row, options)
+                    except Exception as error:
+                        report.setdefault('warnings', []).append('File was exported, but its batch settings could not be saved: ' + str(error))
+                files.append(_batch_file(row, report))
+            except Exception as error:
+                report = deepcopy(options.get('_sf6UnifiedReport', {})) if prepared['sf6'] else {}
+                report.update(_batch_failure(error, publication_started=started))
+                report['destination'] = row['path']
+                files.append(_batch_file(row, report))
+        return _batch_summary(files)
+
+
+def _batch_result_text(report):
+    from .sf6_unified_messages import format_batch
+    return ' '.join(format_batch(report)['lines'])
+
+
+def begin_batch_review(operator, context):
+    global _LAST_BATCH_REVIEW, _LAST_BATCH_RESULT
+    from .sf6_unified_dialogs import begin_review, cancel_active_review, notify
+    payload = _batch_payload(operator)
+    if not payload['entries']:
+        cancel_active_review(context)
+        report = dict(schema=1, scope='batch', status='not_committed', total_count=0,
+                      succeeded_count=0, failed_count=0, pending_count=0, files=[], reason='no_files_enabled')
+        operator.sf6UnifiedResult = json.dumps(report, sort_keys=True)
+        _LAST_BATCH_RESULT = report
+        operator.report({'ERROR'}, 'No files are enabled. Enable at least one batch entry.')
+        return {'CANCELLED'}
+    engine = BatchExportReview()
+    if (getattr(operator, 'sf6ReviewOnly', False) or
+            any(getattr(item, 'sf6ReviewOnly', False) for item in operator.itemList_items if item.enabled)):
+        cancel_active_review(context)
+        review = engine.prepare(payload, {})
+        report = dict(review, status='planned' if review['status'] == 'ready' else review['status'],
+                      scope='batch', publication_started=False, completed_count=0,
+                      succeeded_count=0, failed_count=review['report']['failed_count'],
+                      pending_count=review['report']['ready_count'], total_count=len(payload['entries']))
+        operator.sf6UnifiedResult = json.dumps(report, sort_keys=True)
+        _LAST_BATCH_RESULT = deepcopy(report)
+        _LAST_BATCH_REVIEW = None
+        level = 'INFO' if report['status'] == 'planned' and not report['failed_count'] else 'WARNING' if report['status'] == 'planned' else 'ERROR'
+        message = 'Export plan prepared. No file was written or replaced.' if report['status'] == 'planned' else 'Export stopped. Review the specific errors in Details before retrying.'
+        operator.report({level}, message)
+        return {'FINISHED'} if report['status'] == 'planned' else {'CANCELLED'}
+    def current_payload():
+        try:
+            return _batch_payload(operator)
+        except ReferenceError:
+            # The settings operator has closed. Its detached choices remain
+            # fixed; scene/source changes are still checked by every backend.
+            value = deepcopy(payload)
+            for row in value['entries']:
+                owner = bpy.data.objects.get(row['name']) if row['export_type'] == 'FBXSKEL' else bpy.data.collections.get(row['name'])
+                row['owner_pointer'] = owner.as_pointer() if owner is not None else None
+                row['saved_profile'] = _batch_profile(owner)
+            return value
+    def finished(report):
+        global _LAST_BATCH_RESULT
+        _LAST_BATCH_RESULT = deepcopy(report)
+        from .sf6_unified_messages import format_batch
+        model = format_batch(report)
+        has_warnings = any(row.get('result', {}).get('warnings') for row in report.get('files', []))
+        level = ('ERROR' if report.get('failed_count') and not report.get('succeeded_count')
+                 else 'WARNING' if report.get('failed_count') or report.get('pending_count') or has_warnings
+                 else model['severity'])
+        try:
+            operator.sf6UnifiedResult = json.dumps(report, sort_keys=True)
+        except ReferenceError:
+            pass
+        message = ' '.join(model['lines'])
+        try:
+            notify(message, severity=level)
+        except (RuntimeError, AttributeError):
+            try:
+                operator.report({level}, message)
+            except ReferenceError:
+                print(message)
+    result = begin_review(context, operation='batch', payload=payload, prepare=engine.prepare,
+                          publish=engine.publish, on_result=finished, current_payload=current_payload)
+    if isinstance(result, set):
+        return result
+    _LAST_BATCH_REVIEW = result
+    operator.sf6UnifiedResult = json.dumps(dict(result.review, status='review_pending'), sort_keys=True)
+    return {'INTERFACE'}
 
 class WM_OT_DeleteLoose(Operator):
 	bl_label = "Delete Loose Geometry"
@@ -267,6 +634,8 @@ def determineExportPath(modDirectory,exportType,assetPath,scene):
 def populateCollectionList(itemList,collection,recursionLevel,parentName):
 	
 	item = itemList.add()
+	item.sf6BatchInitializing = True
+	item.sf6BatchExplicitFields = "[]"
 	item.name = collection.name
 	if collection.color_tag == "NONE":
 		item.icon = "OUTLINER_COLLECTION"
@@ -293,6 +662,7 @@ def populateCollectionList(itemList,collection,recursionLevel,parentName):
 		if collection["~TYPE"] == "RE_MESH_COLLECTION":
 			item.exportType = "MESH"
 			item.exportBlendShapes = batch_preserve_source(collection)
+			load_batch_workflow(item, collection)
 			# Older collections may have only some of the new saved settings.
 			for name, default in _BATCH_MESH_FIX_DEFAULTS.items():
 				if name == "limitTotalCount":
@@ -307,16 +677,16 @@ def populateCollectionList(itemList,collection,recursionLevel,parentName):
 					setattr(item, name, default)
 					print(f"Invalid saved batch setting {name} for {item.name}: {err}")
 			
-			if "BatchExport_exportAllLODs" in collection:
-				try:
-					item.exportAllLODs = collection["BatchExport_exportAllLODs"]
-					item.preserveSharpEdges = collection["BatchExport_preserveSharpEdges"]
-					item.rotate90 = collection["BatchExport_rotate90"]
-					item.useBlenderMaterialName = collection["BatchExport_useBlenderMaterialName"]
-					item.preserveBoneMatrices = collection["BatchExport_preserveBoneMatrices"]
-					item.exportBoundingBoxes = collection["BatchExport_exportBoundingBoxes"]
-				except Exception as err:
-					print(f"Failed to load default values for {item.name} - {str(err)}")
+			# Partial saved profiles are valid. A missing sibling must not hide
+			# a field the user already chose, or prevent later fields loading.
+			for name in ('exportAllLODs', 'preserveSharpEdges', 'rotate90',
+			             'useBlenderMaterialName', 'preserveBoneMatrices', 'exportBoundingBoxes'):
+				key = 'BatchExport_' + name
+				if key in collection:
+					try:
+						setattr(item, name, collection[key])
+					except (TypeError, ValueError) as err:
+						print(f"Invalid saved batch setting {name} for {item.name}: {err}")
 					
 		elif collection["~TYPE"] == "RE_MDF_COLLECTION":
 			item.exportType = "MDF"
@@ -342,8 +712,17 @@ def populateCollectionList(itemList,collection,recursionLevel,parentName):
 					print(f"Batch Export: Cannot auto determine path for {item.name}: {str(err)}")
 		if item.exportType == "MESH" and "BatchExport_limitTotalCount" not in collection:
 			setBatchMeshWeightLimit(item, getBatchMeshWeightLimitDefault(item.path))
+	if item.exportType == 'MESH':
+		policy = item.sf6LodPolicy
+		item.sf6LodChoice = policy if policy in ('retain_if_compatible', 'lod0') else ('retain_if_compatible' if item.exportBlendShapes or item.exportAllLODs else 'lod0')
+		# Bind the displayed choice to the runtime value before the preservation
+		# checkbox can change. A malformed saved policy still requires review.
+		if item.path.endswith('.mesh.230110883') and BATCH_LOD_POLICY not in collection:
+			item.sf6LodPolicy = item.sf6LodChoice
+	item.sf6BatchInitializing = False
+	item.sf6BatchExplicitFields = "[]"
 class WM_OT_REBatchExporter(Operator):
-	bl_label = f"RE Batch Exporter ({BATCH_EXPORT_BUILD})"
+	bl_label = "RE Batch Exporter"
 	bl_idname = "re_mesh.batch_exporter"
 	bl_description = "Export all selected RE Engine files quickly"
 	bl_options = {'INTERNAL'}
@@ -364,6 +743,13 @@ class WM_OT_REBatchExporter(Operator):
 	   update = update_uncheckAllItems
 	   )
 	
+	sf6ReviewOnly: BoolProperty(name="sf6ReviewOnly", default=False,
+		options={'HIDDEN', 'SKIP_SAVE'})
+	sf6UnifiedOptIn: BoolProperty(name="sf6UnifiedOptIn", default=False,
+		options={'HIDDEN', 'SKIP_SAVE'})
+	sf6UnifiedResult: StringProperty(name="sf6UnifiedResult", default="",
+		options={'HIDDEN', 'SKIP_SAVE'})
+
 	skipPrompt : bpy.props.BoolProperty(#Not exposed to user
 	   name = "Skip Conversion Prompt",
 	   description = "",
@@ -372,160 +758,11 @@ class WM_OT_REBatchExporter(Operator):
 	def execute(self, context):
 		if self.skipPrompt:
 			self.populate(context)
-		print(f"Batch export started. [{BATCH_EXPORT_BUILD}]")
-		
-		#Save which files are enabled
 		for item in self.itemList_items:
-			if item.exportType != "":
-				if item.exportType == "FBXSKEL":
-					bpy.data.objects[item.name]["BatchExport_enabled"] = item.enabled
-				else:
-					bpy.data.collections[item.name]["BatchExport_enabled"] = item.enabled
-		
-		exportItemList = [item for item in self.itemList_items if not item.hasChild and item.enabled and item.exportType != ""]
-		if not exportItemList:
-			self.report({'WARNING'}, "No files are enabled for batch export.")
-			return {'CANCELLED'}
-		failCount = 0
-		meshFailures = []
-		for index,exportItem in enumerate(exportItemList):
-			if exportItem.invalid:
-				print(f"Skipping {exportItem.name} ({index+1}/{len(exportItemList)}) due to an invalid export path: {exportItem.path}")
-				failCount += 1
-				continue
-			
-			
-			
-			print(f"Exporting File: {exportItem.name} ({index+1}/{len(exportItemList)})")
-			try:
-				os.makedirs(os.path.dirname(os.path.abspath(exportItem.path)),exist_ok = True)
-			except OSError as error:
-				self.report({'WARNING'}, f"Cannot create export directory for {exportItem.name}: {error}")
-				failCount += 1
-				continue
-			if exportItem.exportType == "MESH":
-				try:
-					weightLimit = getBatchMeshWeightLimit(exportItem)
-					print(f"{exportItem.name}: SF6 Preserve Source Data = {bool(exportItem.exportBlendShapes)}")
-					result = bpy.ops.re_mesh.exportfile(
-						filepath = exportItem.path,
-						targetCollection = exportItem.name,
-						exportAllLODs = exportItem.exportAllLODs,
-						exportBlendShapes = exportItem.exportBlendShapes,
-						autoSolveRepeatedUVs = exportItem.autoSolveRepeatedUVs,
-						preserveSharpEdges = exportItem.preserveSharpEdges,
-						splitLoopVertices = getattr(exportItem, "splitLoopVertices", True),
-						normalizeWeights = getattr(exportItem, "normalizeWeights", True),
-						limitTotal = getattr(exportItem, "limitTotal", False),
-						limitTotalCount = weightLimit,
-						shapeKeyExportMode = getattr(exportItem, "shapeKeyExportMode", "MODE0"),
-						rotate90 = exportItem.rotate90,
-						useBlenderMaterialName = exportItem.useBlenderMaterialName,
-						preserveBoneMatrices = exportItem.preserveBoneMatrices,
-						exportBoundingBoxes = exportItem.exportBoundingBoxes,
-						)
-					if 'FINISHED' not in result:
-						failCount += 1
-						meshFailures.append(f"{exportItem.name}: Mesh export was cancelled. See the system console for details.")
-					else:
-						collection = bpy.data.collections[exportItem.name]
-						# The batch exporter owns batch history. Direct export has
-						# independent remembered fields and must not save these.
-						collection["BatchExport_path"] = exportItem.path
-						for name in ("exportAllLODs", "preserveSharpEdges", "rotate90",
-									 "useBlenderMaterialName", "preserveBoneMatrices", "exportBoundingBoxes"):
-							collection["BatchExport_" + name] = getattr(exportItem, name)
-						collection[BATCH_PRESERVE_SOURCE] = bool(exportItem.exportBlendShapes)
-						for name, default in _BATCH_MESH_FIX_DEFAULTS.items():
-							collection["BatchExport_" + name] = weightLimit if name == "limitTotalCount" else getattr(exportItem, name, default)
-				except Exception as err:
-					print(f"Mesh Export Failed: {str(err)}")
-					failCount += 1
-					meshFailures.append(f"{exportItem.name}: {str(err).strip()}")
-			elif exportItem.exportType == "MDF":
-				try:
-					bpy.ops.re_mdf.exportfile(
-						filepath = exportItem.path,
-						targetCollection = exportItem.name,
-						)
-				except Exception as err:
-					print(f"MDF Export Failed: {str(err)}")
-					failCount += 1
-			elif exportItem.exportType == "FBXSKEL":
-				try:
-					bpy.ops.re_fbxskel.exportfile(
-						filepath = exportItem.path,
-						targetArmature = exportItem.name,
-						)
-				except Exception as err:
-					print(f"FBXSkel Export Failed: {str(err)}")
-					failCount += 1
-			elif exportItem.exportType == "CHAIN":
-				if hasattr(bpy.types, "OBJECT_PT_chain_object_mode_panel"):
-					try:
-						bpy.ops.re_chain.exportfile(
-							filepath = exportItem.path,
-							targetCollection = exportItem.name,
-							)
-					except Exception as err:
-						print(f"Chain Export Failed: {str(err)}")
-						failCount += 1
-				else:
-					print("RE Chain Editor is not installed. Skipping batch export entry.")
-					failCount += 1
-			elif exportItem.exportType == "CHAIN2":
-				if hasattr(bpy.types, "OBJECT_PT_chain_object_mode_panel"):
-					try:
-						bpy.ops.re_chain2.exportfile(
-							filepath = exportItem.path,
-							targetCollection = exportItem.name,
-							)
-					except Exception as err:
-						print(f"Chain2 Export Failed: {str(err)}")
-						failCount += 1
-				else:
-					print("RE Chain Editor is not installed. Skipping batch export entry.")
-					failCount += 1
-			elif exportItem.exportType == "CLSP":
-				if hasattr(bpy.types, "OBJECT_PT_chain_object_mode_panel"):
-					try:
-						bpy.ops.re_clsp.exportfile(
-							filepath = exportItem.path,
-							targetCollection = exportItem.name,
-							)
-					except Exception as err:
-						print(f"Chain Export Failed: {str(err)}")
-						failCount += 1
-				else:
-					print("RE Chain Editor is not installed. Skipping batch export entry.")
-					failCount += 1
-			elif exportItem.exportType == "SFUR":
-				try:
-					bpy.ops.re_sfur.exportfile(
-						filepath = exportItem.path,
-						targetCollection = exportItem.name,
-						)
-				except Exception as err:
-					print(f"SFUR Export Failed: {str(err)}")
-					failCount += 1
-			else:
-				print(f"Unsupported File Type ({exportItem.exportType}), skipping")
-				failCount += 1
-		if failCount != 0:
-			message = f"{failCount}/{len(exportItemList)} files failed to export. See the system console for details."
-			if meshFailures:
-				message += " First mesh failure: " + meshFailures[0]
-			self.report({'WARNING'}, message)
-			if not bpy.app.background:
-				def draw_failure(popup, context):
-					for line in textwrap.wrap(message, width=88):
-						popup.layout.label(text=line)
-				context.window_manager.popup_menu(draw_failure, title="Batch Export Failed", icon='ERROR')
-			return {'CANCELLED'}
-		else:
-			self.report({"INFO"},"Batch export finished successfully.")
-		return {'FINISHED'}
-	
+			if item.exportType == 'MESH' and item.path.endswith('.mesh.230110883'):
+				apply_batch_new_profile_defaults(item, bpy.data.collections.get(item.name), enable_unified=True)
+		return begin_batch_review(self, context)
+
 	def populate(self, context):
 		parentDict = {None:None}
 		for collection in bpy.data.collections:
@@ -553,6 +790,9 @@ class WM_OT_REBatchExporter(Operator):
 		self.itemList_items.clear()
 		for collection in collectionRoots:
 			populateCollectionList(self.itemList_items, collection, recursionLevel = 0,parentName = "")
+		for item in self.itemList_items:
+			if item.exportType == "MESH" and item.path.endswith('.mesh.230110883'):
+				apply_batch_new_profile_defaults(item, bpy.data.collections.get(item.name), enable_unified=True)
 		#print(f"Item Count: {len(self.itemList_items)}")
 		#Add fbxskel armatures for export
 		for armatureObj in [obj for obj in bpy.data.objects if obj.type == "ARMATURE" and (".fbxskel" in obj.name.lower() or (".skeleton" in obj.name.lower()))]:
@@ -584,7 +824,7 @@ class WM_OT_REBatchExporter(Operator):
 			if context.region and context.window:
 				context.window.cursor_warp(context.region.width // 2, context.region.height)
 		
-			return context.window_manager.invoke_props_dialog(self,width = EXPORTER_WINDOW_SIZE,confirm_text = "Batch Export Files")
+			return context.window_manager.invoke_props_dialog(self,width = EXPORTER_WINDOW_SIZE,confirm_text = "Review and export")
 
 	
 	def draw(self,context):
@@ -597,7 +837,7 @@ class WM_OT_REBatchExporter(Operator):
 		split2 = col1.split()
 		col1sub1 = split2.column()
 		col1sub1.alignment = "LEFT"
-		col1sub1.label(text=f"Files ({sum(1 for item in self.itemList_items if (not item.hasChild and item.enabled))} selected)")
+		col1sub1.label(text=f"Files ({sum(1 for item in self.itemList_items if (not item.hasChild and item.enabled and item.exportType))} selected)")
 		col1sub2 = col1.column()
 		row = split2.row()
 		row.alignment = "RIGHT"
@@ -615,8 +855,10 @@ class WM_OT_REBatchExporter(Operator):
 			)
 		col2 = split.column()
 		col2.label(text="Export Settings")
+		from .sf6_unified_dialogs import draw_details_button
+		draw_details_button(col2)
 		box = col2.box()
-		if self.itemList_index != -1:
+		if 0 <= self.itemList_index < len(self.itemList_items):
 			item = self.itemList_items[self.itemList_index]
 			if not item.hasChild and item.exportType != "":
 				box.label(text=f"Type: {item.exportType}")
@@ -628,20 +870,17 @@ class WM_OT_REBatchExporter(Operator):
 					row.alert = True
 					row.label(text="Path is empty or missing the file version number on the end. ",icon = "ERROR")
 				if item.exportType == "MESH":
-					box.prop(item, "exportAllLODs")
-					if item.path.endswith('.241111606'):
-						box.prop(item, "shapeKeyExportMode")
-					else:
-						box.prop(item, "exportBlendShapes")
-					collection = bpy.data.collections.get(item.name)
-					if item.path.endswith('.mesh.230110883') or (collection and collection.get('SF6PreserveSource')):
+					if item.path.endswith('.mesh.230110883'):
+						box.prop(item, 'exportBlendShapes')
+						box.prop(item, 'sf6LodChoice')
 						if item.exportBlendShapes:
-							box.label(text="Preserves the original SF6 mesh layout.", icon='INFO')
-							box.label(text="New/replaced meshes need ordinary export.")
-							box.label(text="Disable preservation to rebuild this mesh.")
+							box.label(text='Required shape-key losses are reviewed before export.', icon='INFO')
 						else:
-							box.label(text="Ordinary export rebuilds this mesh.", icon='INFO')
-							box.label(text="Original SF6 deformation data is not kept.")
+							box.label(text='Source corrective shapes will not be preserved.', icon='INFO')
+					else:
+						box.prop(item, 'exportAllLODs')
+						if item.path.endswith('.241111606'):
+							box.prop(item, 'shapeKeyExportMode')
 					box.prop(item,"autoSolveRepeatedUVs")
 					box.prop(item,"preserveSharpEdges")
 					box.prop(item,"splitLoopVertices")
@@ -657,6 +896,8 @@ class WM_OT_REBatchExporter(Operator):
 					box.prop(item, "exportBoundingBoxes")
 			else:
 				box.label(text=f"Select a file from the list to configure export settings.")
+		else:
+			box.label(text='No export entries are available.')
 				
 
 class WM_OT_SolveRepeatedUVs(Operator):
@@ -681,6 +922,11 @@ class WM_OT_SolveRepeatedUVs(Operator):
 class WM_OT_QuickBatchExport(Operator):
 	bl_label = "Quick Batch Export"
 	bl_idname = "re_mesh.quick_batch_export"
-	bl_description = "Single click batch export. Works the same as RE Batch Export but there is no prompt to configure settings.\nThe previous settings of RE Batch Export are used."
+	bl_description = "Use the previous batch settings and review any required shape-key losses before export"
+	sf6ReviewOnly: BoolProperty(name="sf6ReviewOnly", default=False,
+		options={'HIDDEN', 'SKIP_SAVE'})
+	sf6UnifiedOptIn: BoolProperty(name="sf6UnifiedOptIn", default=False,
+		options={'HIDDEN', 'SKIP_SAVE'})
 	def execute(self, context):
-		return bpy.ops.re_mesh.batch_exporter('EXEC_DEFAULT', skipPrompt=True)
+		return bpy.ops.re_mesh.batch_exporter('EXEC_DEFAULT', skipPrompt=True,
+			sf6UnifiedOptIn=getattr(self, "sf6UnifiedOptIn", False), sf6ReviewOnly=getattr(self, "sf6ReviewOnly", False))

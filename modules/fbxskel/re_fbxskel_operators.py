@@ -24,7 +24,7 @@ def linkArmatures(mainArmatureObj,linkArmaturesList):
 				linkCount += 1
 		if linkCount != 0:
 			armatureLinkCount += 1
-	print(f"Linked {linkCount} bones on {armatureObj.name} to {mainArmatureObj.name}.")
+		print(f"Linked {linkCount} bones on {armatureObj.name} to {mainArmatureObj.name}.")
 	return armatureLinkCount
 def update_checkAllArmatures(self, context):
 	if self.checkAllArmatures == True:

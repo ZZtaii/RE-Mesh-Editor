@@ -1,5 +1,6 @@
 """SF6 filename routing and Fluffy mod-folder packaging, independent of Blender."""
 from dataclasses import dataclass
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -28,7 +29,16 @@ DEFAULT_FIELDS = ('parent_directory', 'folder_name', 'mod_name', 'mod_version',
                   'last_character', 'extra_categories', 'bundle_name', 'parent_mod_name',
                   'create_dummy_parent', 'parent_folder_name', 'parent_categories', 'export_content',
                   'exportBlendShapes', 'selectedOnly', 'sf6HybridPreserve',
-                  'targetCollection', 'rotate90')
+                  'targetCollection', 'rotate90', 'sf6ExportWorkflow', 'sf6LodPolicy',
+                  'autoSolveRepeatedUVs', 'preserveSharpEdges', 'splitLoopVertices', 'preserveBoneMatrices')
+# Versioned choices are saved only after the complete folder transaction succeeds.
+# Rig decisions and consent/plan tokens are execution-local, never defaults.
+UNIFIED_DEFAULT_FIELDS = ('sf6ExportWorkflow', 'sf6LodPolicy')
+# Some manually saved profiles contain the old selected-only LOD scope. Keep
+# that evidence without introducing a new visible or defaulted operator field.
+PROFILE_EVIDENCE_FIELDS = ('exportAllLODs',)
+PROCESSING_DEFAULT_FIELDS = ('autoSolveRepeatedUVs', 'preserveSharpEdges',
+                             'splitLoopVertices', 'preserveBoneMatrices')
 
 
 @dataclass(frozen=True)
@@ -196,6 +206,11 @@ def filter_defaults(values):
               if isinstance(values.get(key), bool if key in (
                   'create_dummy_parent', 'exportBlendShapes', 'selectedOnly',
                   'sf6HybridPreserve', 'rotate90') else str)}
+    # Preserve malformed and future-version values for explicit review. Dropping
+    # one here could silently reactivate legacy routing on the next attempt.
+    for key in UNIFIED_DEFAULT_FIELDS + PROFILE_EVIDENCE_FIELDS + PROCESSING_DEFAULT_FIELDS:
+        if key in values:
+            result[key] = values[key]
     if result.get('export_content') not in ('MESH', 'MENU'):
         result.pop('export_content', None)
     return result
@@ -237,17 +252,41 @@ class RecoveryRequiredError(OSError):
     """Keep the staging directory when a failed update cannot be rolled back."""
 
 
-def _publish_existing(staged, destination, relative_paths, backup):
-    # Roll back this export's files on failure; unrelated textures/MDFs remain.
+def _file_state(path):
+    path = Path(path)
+    if path.is_symlink():
+        return {'kind': 'symlink', 'target': os.readlink(path)}
+    if not path.exists():
+        return {'kind': 'missing'}
+    if not path.is_file():
+        return {'kind': 'directory' if path.is_dir() else 'other'}
+    digest = hashlib.sha256()
+    with path.open('rb') as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+            digest.update(chunk)
+    return {'kind': 'file', 'sha256': digest.hexdigest(), 'size': path.stat().st_size}
+
+
+def _publish_existing(staged, destination, relative_paths, backup, transaction=None):
+    # Back up and verify every affected file. An attempted replace is included
+    # in rollback even if the OS raises after changing the destination.
+    transaction = transaction if transaction is not None else {}
     targets = [_contained_path(destination, relative) for relative in relative_paths]
+    original = {}
+    transaction['affected_paths'] = [str(target) for target in targets]
     for target, relative in zip(targets, relative_paths):
+        original[relative] = _file_state(target)
+        if target.is_symlink():
+            raise ValueError('A destination file is a symbolic link. Choose another Mod Folder Name.')
         if target.exists():
             if not target.is_file():
                 raise ValueError('An export destination is not a file: ' + str(target))
             saved = backup / relative
             saved.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(target, saved)
-    changed, created_dirs = [], []
+            if _file_state(saved) != original[relative]:
+                raise OSError('The original destination could not be backed up safely: ' + str(target))
+    attempted, created_dirs = [], []
     try:
         for target, relative in zip(targets, relative_paths):
             missing = []
@@ -256,30 +295,66 @@ def _publish_existing(staged, destination, relative_paths, backup):
                 missing.append(directory)
                 directory = directory.parent
             for directory in reversed(missing):
-                directory.mkdir()
+                transaction['publication_started'] = True
                 created_dirs.append(directory)
+                directory.mkdir()
+            transaction['publication_started'] = True
+            transaction['folder_unchanged'] = False
+            attempted.append((target, relative))
             os.replace(staged / relative, target)
-            changed.append((target, relative))
     except Exception as error:
         restore_errors = []
-        for target, relative in reversed(changed):
+        for target, relative in reversed(attempted):
             saved = backup / relative
             try:
                 if saved.exists():
                     shutil.copy2(saved, target)
                 else:
-                    target.unlink()
+                    target.unlink(missing_ok=True)
+                if _file_state(target) != original[relative]:
+                    raise OSError('Restored file verification failed: ' + str(target))
             except OSError as restore_error:
                 restore_errors.append(restore_error)
         for directory in reversed(created_dirs):
             try:
                 directory.rmdir()
-            except OSError:
-                pass
+            except OSError as restore_error:
+                if directory.exists():
+                    restore_errors.append(restore_error)
+        transaction.update(rollback_verified=not restore_errors,
+                           folder_unchanged=not restore_errors)
         if restore_errors:
+            original_files = {relative: state for relative, state in original.items()
+                              if state['kind'] == 'file'}
+            verified_backups = 0
+            for relative, state in original_files.items():
+                try:
+                    verified_backups += _file_state(backup / relative) == state
+                except OSError:
+                    pass
+            all_backups_verified = bool(original_files) and verified_backups == len(original_files)
+            recovery = backup if backup.is_dir() else backup.parent if backup.parent.is_dir() else None
+            transaction.update(publication_outcome='recovery_required',
+                recovery_kind='verified_backups' if all_backups_verified else
+                    'unverified_backups' if original_files else 'cleanup_only',
+                verified_backup_files=verified_backups)
+            transaction.pop('recovery_directory', None)
+            if recovery is not None:
+                transaction['recovery_directory'] = str(recovery)
+            if all_backups_verified:
+                detail = f'Original files are saved in {backup}.'
+            elif original_files:
+                detail = 'The original-file backups could not all be verified.'
+            else:
+                detail = ('Newly created files or directories could not be removed. '
+                          'No original destination files were replaced.')
+            if not all_backups_verified:
+                detail += (f' Recovery workspace: {recovery}.' if recovery is not None else
+                           ' No recovery workspace is available; review the affected output paths.')
             raise RecoveryRequiredError(
-                f'Export failed and some files could not be restored. '
-                f'Original files are saved in {backup}. Error: {error}') from error
+                f'Export failed and some files or directories could not be restored. '
+                f'{detail} Error: {error}') from error
+        transaction['publication_outcome'] = 'rolled_back'
         raise
 
 
@@ -314,12 +389,12 @@ def _plan_dummy_parent(parent, child_folder, metadata, folder_name, categories):
     return Path(folder, 'modinfo.ini'), render_modinfo(values)
 
 
-def export_mod_folder(parent_directory, folder_name, asset, values, preview_path, export_mesh,
-                      *, create_dummy_parent=False, parent_folder_name='', parent_categories=''):
-    """Stage a mesh, INI and optional image before updating the chosen mod folder."""
+def plan_mod_folder(parent_directory, folder_name, asset, values, preview_path,
+                    *, create_dummy_parent=False, parent_folder_name='', parent_categories=''):
+    """Validate packaging and inspect existing content without creating files."""
     parent = Path(parent_directory).expanduser().resolve()
     if not parent.is_dir():
-        raise ValueError('Choose an existing parent directory for the mod folder.')
+        raise ValueError('Choose an existing Parent Directory; the mod folder will be created inside it.')
     destination = parent / validate_folder_name(folder_name)
     if destination.is_symlink() or (destination.exists() and not destination.is_dir()):
         raise ValueError('The mod destination must be a regular folder.')
@@ -357,6 +432,43 @@ def export_mod_folder(parent_directory, folder_name, asset, values, preview_path
     ini_path = destination / 'modinfo.ini'
     existing = ini_path.read_text(encoding='utf-8-sig') if ini_path.is_file() else ''
     ini = render_modinfo(metadata, existing)
+    for relative in relative_paths:
+        target = _contained_path(destination, relative)
+        if target.is_symlink():
+            raise ValueError('A destination file is a symbolic link. Choose another Mod Folder Name.')
+        if target.exists() and not target.is_file():
+            raise ValueError('An export destination is not a file: ' + str(target))
+    states = {str(destination / relative): _file_state(destination / relative)
+              for relative in relative_paths}
+    states[str(destination)] = _file_state(destination)
+    if preview:
+        states[str(preview)] = _file_state(preview)
+    if create_dummy_parent:
+        parent_ini = parent / dummy_folder_name(parent_name, parent_folder_name) / 'modinfo.ini'
+        states[str(parent_ini)] = _file_state(parent_ini)
+        states[str(parent_ini.parent)] = _file_state(parent_ini.parent)
+    conflicts = destination_conflicts(parent, folder_name, asset) if asset else []
+    snapshot = hashlib.sha256(json.dumps({'files': states, 'conflicts': conflicts},
+                            sort_keys=True).encode('utf-8')).hexdigest()
+    return dict(parent=parent, destination=destination, asset=asset, metadata=metadata,
+                preview=preview, relative_paths=relative_paths, dummy=dummy, ini=ini,
+                snapshot=snapshot, states=states, conflicts=conflicts)
+
+
+def export_mod_folder(parent_directory, folder_name, asset, values, preview_path, export_mesh,
+                      *, create_dummy_parent=False, parent_folder_name='', parent_categories='',
+                      validate_staged=None, expected_snapshot=None, transaction_report=None):
+    """Stage every payload; report untouched/rollback only when verified."""
+    transaction = transaction_report if transaction_report is not None else {}
+    transaction.update(publication_started=False, folder_unchanged=True,
+                       rollback_verified=False, publication_outcome='not_started')
+    planning = dict(create_dummy_parent=create_dummy_parent,
+                    parent_folder_name=parent_folder_name, parent_categories=parent_categories)
+    plan = plan_mod_folder(parent_directory, folder_name, asset, values, preview_path, **planning)
+    if expected_snapshot is not None and expected_snapshot != plan['snapshot']:
+        raise ValueError('UNIFIED_REQUEST_CHANGED')
+    parent, destination, metadata = plan['parent'], plan['destination'], plan['metadata']
+    preview, relative_paths, dummy, ini = plan['preview'], plan['relative_paths'], plan['dummy'], plan['ini']
     temporary = Path(tempfile.mkdtemp(prefix='.re-mesh-export-', dir=parent))
     keep_backup = False
     try:
@@ -371,21 +483,48 @@ def export_mod_folder(parent_directory, folder_name, asset, values, preview_path
         (staged / 'modinfo.ini').write_text(ini, encoding='utf-8')
         if preview:
             shutil.copy2(preview, staged / metadata['screenshot'])
+            if _file_state(preview) != plan['states'][str(preview)]:
+                raise ValueError('UNIFIED_REQUEST_CHANGED')
+            if _file_state(staged / metadata['screenshot']) != plan['states'][str(preview)]:
+                raise OSError('The Preview Image could not be copied safely. Choose the image again and retry.')
         if dummy:
             dummy_path = staged_root / dummy[0]
             dummy_path.parent.mkdir(parents=True)
             dummy_path.write_text(dummy[1], encoding='utf-8')
+        # Unified callers bind review to the logical destination rather than
+        # this transaction's fresh temporary path. Recheck after every staged
+        # file is ready, immediately before publishing any of them.
+        if validate_staged is not None:
+            validate_staged()
+        if expected_snapshot is not None:
+            current = plan_mod_folder(parent_directory, folder_name, asset, values, preview_path, **planning)
+            if current['snapshot'] != expected_snapshot:
+                raise ValueError('UNIFIED_REQUEST_CHANGED')
         if destination.exists() or dummy:
             publication = [Path(folder_name) / relative for relative in relative_paths]
             if dummy:
                 publication.append(dummy[0])
-            _publish_existing(staged_root, parent, publication, temporary / 'backup')
+            _publish_existing(staged_root, parent, publication, temporary / 'backup', transaction)
         else:
-            os.replace(staged, destination)
+            transaction.update(publication_started=True, folder_unchanged=False)
+            try:
+                os.replace(staged, destination)
+            except Exception:
+                transaction.update(folder_unchanged=not destination.exists(),
+                    publication_outcome='not_written' if not destination.exists() else 'unverified')
+                raise
+        transaction.update(publication_outcome='committed', folder_unchanged=False,
+                           published_paths=[str(destination / path) for path in relative_paths] +
+                               ([str(parent / dummy[0])] if dummy else []))
     except RecoveryRequiredError:
         keep_backup = True
         raise
     finally:
         if not keep_backup:
-            shutil.rmtree(temporary)
+            try:
+                shutil.rmtree(temporary)
+            except OSError as error:
+                # Cleanup failure does not undo a proven package commit.
+                transaction['cleanup_warning'] = str(error)
+                transaction['staging_directory'] = str(temporary)
     return destination / (asset.relative_path if asset else 'modinfo.ini')
