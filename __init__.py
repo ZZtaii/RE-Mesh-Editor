@@ -740,7 +740,7 @@ class ImportREMesh(Operator, ImportHelper):
 			options={'SKIP_SAVE'}
 			)
 	filename_ext = ".mesh.*"
-	filter_glob: StringProperty(default="*.mesh.*", options={'HIDDEN'})
+	filter_glob: StringProperty(default="*.mesh*", options={'HIDDEN'})
 	clearScene : BoolProperty(
 	   name = "Clear Scene",
 	   description = "Clears all objects before importing the mesh file",
@@ -932,6 +932,10 @@ class ImportREMesh(Operator, ImportHelper):
 			if success:
 				importedCount += 1
 				options["clearScene"] = False
+				# Imports that fell back instead of refusing the file say so here.
+				for warning in (success[0] if isinstance(success, tuple) else ()):
+					if str(warning).startswith('SF6 shape keys'):
+						self.report({'WARNING'}, f"{file.name}: {warning}")
 				if multiFileImport and self.mergeImportedArmatures and not mergeArmatureName:
 					# Import merging takes a data name, even without mesh collections.
 					mergeArmatureName = options["mergeArmature"] if options["mergeArmature"] in bpy.data.armatures else next(
@@ -1946,7 +1950,7 @@ classes = [
 
 #Drag and drop importing, 4.1 or higher only
 if bpy.app.version >= (4, 1, 0):
-	meshExtensionsString = ""
+	meshExtensionsString = ".mesh;"#Mesh files that lost their version suffix
 	for meshVersion in meshFileVersionToGameNameDict.keys():
 		meshExtensionsString += f".{str(meshVersion)};"
 	class MESH_FH_drag_import(bpy.types.FileHandler):

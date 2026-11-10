@@ -24,7 +24,7 @@ import os
 from math import radians,floor,sqrt
 from mathutils import Vector,Matrix
 from itertools import chain, repeat, islice
-from .file_re_mesh import readREMesh,writeREMesh,ParsedREMeshToREMesh,Sphere,AABB,Matrix4x4,meshFileVersionToGameNameDict
+from .file_re_mesh import readREMesh,writeREMesh,ParsedREMeshToREMesh,Sphere,AABB,Matrix4x4,meshFileVersionToGameNameDict,detectMeshFileVersion,getMeshFileBaseName
 from .re_mesh_parse import ParsedREMesh,VisconGroup,LODLevel,SubMesh,ParsedBone,Skeleton,BlendShape
 from ..mdf.file_re_mdf import readMDF
 from ..mdf.blender_re_mesh_mdf import findMDFPathFromMeshPath,importMDF
@@ -945,39 +945,52 @@ def resolveMeshGameNameConflict(gameName,filePath):
 @tracked_operation("Import")
 def importREMeshFile(filePath,options):
 	progress_stage("Reading and validating mesh data", 5)
-	sf6SourceMode = filePath.endswith('.mesh.230110883') and options.get('importBlendShapes', True) and not options.get('importArmatureOnly', False)
+	warningList = []
+	errorList = []
+	# The header decides the version, so a renamed or oddly named SF6 mesh still imports as SF6.
+	meshVersion = detectMeshFileVersion(filePath)
+	if meshVersion is None:
+		print("Unable to find a mesh version in the file name or header.")
+	sf6SourceMode = meshVersion == 230110883 and options.get('importBlendShapes', True) and not options.get('importArmatureOnly', False)
 	if sf6SourceMode and (options.get('mergeGroups') or options.get('mergeArmature')):
-		raise ValueError('SF6 source mode requires Merge Groups and Merge Armature to be disabled')
+		# Source preservation cannot follow merged groups or a shared armature. Import the
+		# mesh anyway, exactly as it would import with Import Blend Shapes turned off.
+		sf6SourceMode = False
+		warningList.append('SF6 shape keys and exact-source export data were skipped because Merge Groups or Merge Armature is on. Import without them to keep shape keys.')
+		raiseWarning(warningList[-1])
 	meshImportStartTime = time.time()
-	fileName = os.path.split(filePath)[1].split(".mesh")[0]
-	try:
-		meshVersion = int(os.path.splitext(filePath)[1].replace(".",""))
-	except:
-		print("Unable to parse mesh version number in file path.")
-		meshVersion = None
+	fileName = getMeshFileBaseName(filePath)
 	if meshVersion in meshFileVersionToGameNameDict:
 		gameName = meshFileVersionToGameNameDict[meshVersion]
 		if gameName in meshGameNameConflictDict:
 			gameName = resolveMeshGameNameConflict(gameName, filePath)
 	else:
 		gameName = None
-	#print(f"Game Name:{gameName}")	
-	warningList = []
-	errorList = []
-	
+	#print(f"Game Name:{gameName}")
+
 	print("\033[96m__________________________________\nRE Mesh import started.\033[0m")
 	# Validate source data before Clear Scene can remove the current project.
 	sf6Source = None
 	if sf6SourceMode:
 		from .sf6_source import SourceMesh
-		with open(filePath, 'rb') as sourceFile:
-			sf6Source = SourceMesh(sourceFile.read())
+		try:
+			with open(filePath, 'rb') as sourceFile:
+				sf6Source = SourceMesh(sourceFile.read())
+		except OSError:
+			raise
+		except Exception as error:
+			# A mesh the preservation reader cannot follow is still a mesh the ordinary
+			# importer may read. Fall back instead of refusing the file.
+			sf6SourceMode = False
+			sf6Source = None
+			warningList.append(f'SF6 shape keys and exact-source export data were skipped ({str(error) or type(error).__name__}). The mesh was imported as an ordinary editable mesh.')
+			raiseWarning(warningList[-1])
 	if options["importAllLODs"]:
 		lodTarget = None
 	else:
 		lodTarget = 0
 	reMesh = readREMesh(filePath,lodTarget)
-	meshFileName = os.path.splitext(os.path.split(filePath)[1])[0]
+	meshFileName = fileName + ".mesh"
 	meshParseStartTime = time.time()
 	parsedMesh = ParsedREMesh()
 	importBlendShapes = (
