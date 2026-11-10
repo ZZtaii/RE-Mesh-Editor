@@ -30,11 +30,11 @@ def _is_editor_state_attribute(attribute):
     return False
 
 
-def fingerprint(collection,selected_objects,options=None,stable_ids=False,canonical_attributes=False):
+def fingerprint(collection,selected_objects,options=None,stable_ids=False,canonical_attributes=False,collection_label=None):
     if needs_snapshot(collection):
         with export_snapshot(collection) as (target, snapshot):
             selected = None if selected_objects is None else tuple(snapshot.mapping[o] for o in selected_objects if o in snapshot.mapping)
-            return fingerprint(target, selected, options, stable_ids, canonical_attributes)
+            return fingerprint(target, selected, options, stable_ids, canonical_attributes, collection_label)
     # Update evaluated transforms without committing live Edit Mode data.
     bpy.context.view_layer.update()
     digest=hashlib.sha256();pending=[];seen=set()
@@ -66,7 +66,7 @@ def fingerprint(collection,selected_objects,options=None,stable_ids=False,canoni
         try:keys=value.keys()
         except TypeError:return {}  # Some modifier RNA types have no custom properties.
         return {k:convert(value[k]) for k in keys}
-    put({'collection':((logical_name(collection),'stable_v1') if stable_ids else collection.get('SF6PlanCollectionIdentity',(logical_name(collection),logical_pointer(collection)))),'selected':None if selected_objects is None else sorted(identity(o) for o in selected_objects),'settings':{k:v for k,v in (options or {}).items() if not k.startswith('_sf6') and k!='targetCollection'},'source_identity':collection.get('SF6SourceSHA256'),'owners':(options or {}).get('_sf6PreserveSourceOwners',()),'logical_target':(options or {}).get('_sf6LogicalTargetPath'),'frame':(bpy.context.scene.frame_current,bpy.context.scene.frame_subframe)})
+    put({'collection':((logical_name(collection) if collection_label is None else collection_label,'stable_v1') if stable_ids else collection.get('SF6PlanCollectionIdentity',(logical_name(collection),logical_pointer(collection)))),'selected':None if selected_objects is None else sorted(identity(o) for o in selected_objects),'settings':{k:v for k,v in (options or {}).items() if not k.startswith('_sf6') and k!='targetCollection'},'source_identity':collection.get('SF6SourceSHA256'),'owners':(options or {}).get('_sf6PreserveSourceOwners',()),'logical_target':(options or {}).get('_sf6LogicalTargetPath'),'frame':(bpy.context.scene.frame_current,bpy.context.scene.frame_subframe)})
     put(('export_collection_metadata',collection.get('LODGroupNameHash'),collection.get('LOD Distance')))
     pending.extend(collection.children)
     pending.extend(collection.all_objects)

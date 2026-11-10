@@ -20,10 +20,13 @@ class UnifiedSettingsConflict(ValueError):
         super().__init__('UNIFIED_SETTINGS_CONFLICT')
 
 
-def authoring_state(collection,legacy=False):
+def authoring_state(collection,legacy=False,label=None):
     # 'state' baselines saved by earlier builds hash raw attribute layout, so a
     # no-edit Edit Mode visit read as an edit. 'state_v2' ignores that noise.
-    return fingerprint(collection,None,{},stable_ids=True,canonical_attributes=not legacy)
+    # 'label' is the collection name the baseline was captured under: renaming the
+    # collection changes nothing in the exported mesh, so it is not an edit.
+    return fingerprint(collection,None,{},stable_ids=True,canonical_attributes=not legacy,
+                       collection_label=label if isinstance(label,str) else None)
 
 def rig_state(collection):
     arms=[o for o in collection.objects if o.type=='ARMATURE']
@@ -64,7 +67,7 @@ def cached_rig_state(collection):
 
 def capture_import_baseline(collection):
     collection[BASELINE]=json.dumps({'schema':1,'source_sha256':collection.get('SF6SourceSHA256'),
-        'state_v2':authoring_state(collection),'rig':rig_state(collection),'cached_rig':cached_rig_state(collection)},sort_keys=True)
+        'collection_name':collection.name,'state_v2':authoring_state(collection),'rig':rig_state(collection),'cached_rig':cached_rig_state(collection)},sort_keys=True)
 
 def _source(collection):
     if collection is None:return None,'missing_collection'
@@ -185,7 +188,7 @@ def plan_export(path,options):
     except (ValueError,TypeError):baseline={}
     if not isinstance(baseline,dict):baseline={}
     state_key='state_v2' if 'state_v2' in baseline else 'state'
-    state=authoring_state(collection,legacy=state_key=='state')
+    state=authoring_state(collection,legacy=state_key=='state',label=baseline.get('collection_name'))
     if status!='verified':reasons.append(status)
     if baseline.get('schema')!=1 or baseline.get('source_sha256')!=collection.get('SF6SourceSHA256'):reasons.append('no_verified_import_snapshot')
     elif baseline.get(state_key)!=state:reasons.append('authoring_changed')
@@ -342,6 +345,45 @@ def _current_source_plan(path,options):
         return plan_export(path,dict(options,targetCollection=snapshot.collection.name))
 
 
+# Blender computes tangents on several threads and the last bit of a result can
+# differ between runs. The writer floors each component to one byte, so a value
+# sitting on a rounding boundary flips that byte: the same scene exported twice
+# gives files that differ by one unit in a byte or two. Review and publication
+# each regenerate the mesh and compare hashes, so that flicker made about half
+# of rebuilt-geometry exports fail with UNIFIED_REVIEWED_OUTPUT_CHANGED.
+# The plan token already proves scene, settings and source are unchanged, so the
+# first output validated for a token stands for later runs that differ from it
+# only by such one-unit rounding steps. Any larger difference is still reported.
+_REVIEWED_OUTPUTS={}
+_REVIEWED_OUTPUT_LIMIT=1<<29
+_ROUNDING_FLICKER_LIMIT=64
+
+def _remember_reviewed_output(plan_token,data):
+    _REVIEWED_OUTPUTS.pop(plan_token,None)
+    _REVIEWED_OUTPUTS[plan_token]=data
+    while len(_REVIEWED_OUTPUTS)>1 and sum(len(v) for v in _REVIEWED_OUTPUTS.values())>_REVIEWED_OUTPUT_LIMIT:
+        _REVIEWED_OUTPUTS.pop(next(iter(_REVIEWED_OUTPUTS)))
+
+def _only_rounding_flicker(first,second):
+    if len(first)!=len(second):return False
+    a=np.frombuffer(first,np.uint8);b=np.frombuffer(second,np.uint8)
+    changed=np.flatnonzero(a!=b)
+    if len(changed)>_ROUNDING_FLICKER_LIMIT:return False
+    step=(a[changed].astype(np.int16)-b[changed].astype(np.int16))%256
+    return bool(np.all((step==1)|(step==255)))
+
+def _stable_output(plan_token,data,staged):
+    """Return the output that stands for this plan, rewriting the staged file to match."""
+    reviewed=_REVIEWED_OUTPUTS.get(plan_token)
+    if reviewed is None or reviewed==data:
+        _remember_reviewed_output(plan_token,data)
+        return data
+    if not _only_rounding_flicker(reviewed,data):
+        _remember_reviewed_output(plan_token,data)
+        return data
+    with open(staged,'wb') as f:f.write(reviewed)
+    return reviewed
+
 def _execute_unified_snapshot(path,options,exporter,review,*,logical_path=None,staging_directory=None):
     preview=review['preview']
     logical_path=os.path.abspath(logical_path or path)
@@ -396,6 +438,7 @@ def _execute_unified_snapshot(path,options,exporter,review,*,logical_path=None,s
                       source_status=('verified_source_'+plan['route']) if source is not None else ('unverified_'+plan['route']),source=source),'UNIFIED_BACKEND_FAILED')
             else:_need(exporter(staged,child),'UNIFIED_BACKEND_FAILED')
             with open(staged,'rb') as f:data=f.read()
+            if plan['route']!='exact_source':data=_stable_output(plan['plan_token'],data,staged)
             output=validate_output(data,ordinary=plan['route'] in ('ordinary','ordinary_rig','ordinary_axis','ordinary_cached_rig'))
             source,_=_source(collection)
             if plan['route']=='exact_source':
