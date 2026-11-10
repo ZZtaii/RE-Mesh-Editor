@@ -1,11 +1,3 @@
-## SF6 unified export, version 0.71
-
-See [SF6 Unified Export](SF6_UNIFIED_EXPORT.md) for the current single preservation workflow, scoped fallback review, LOD behavior and verification limits. Older strict-source and Hybrid script interfaces remain internal compatibility paths.
-
-The unified workflow supports export from mesh Edit, Sculpt, Weight/Vertex/Texture Paint, armature Pose and armature Edit modes. Finish an active brush stroke or modal operation before exporting. Older sections below describe legacy interfaces and earlier release validation; their Object Mode advice is not a unified-export restriction. Validation for this update uses Blender 4.3.2 on Linux; it does not establish Windows, Blender 5 or in-game compatibility.
-
-![REMeshEditorTitle](https://github.com/NSACloud/RE-Mesh-Editor/assets/46909075/156d0b53-ff4f-43db-9a3d-9e0cbd71326e)
-
 # RE Mesh Editor — Street Fighter 6 fork
 
 A Blender addon for importing and exporting RE Engine `.mesh` and `.mdf2` (material) files natively, with no Noesis required.
