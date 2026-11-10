@@ -713,11 +713,7 @@ class ExportSF6ModFolder(bpy.types.Operator):
                     exportBlendShapes=self.exportBlendShapes, sf6HybridPreserve=self.sf6HybridPreserve,
                     selectedOnly=self.selectedOnly, rotate90=self.rotate90,
                     exportAllLODs=preferences.default_exportAllLODs))
-                # The dialog no longer offers a LOD choice: lower LODs are kept
-                # whenever the mesh is unchanged. A saved "LOD0 Only" from an
-                # earlier build must not linger where it can no longer be seen.
-                # Scripts can still pass sf6LodPolicy explicitly.
-                self.sf6LodPolicy = 'retain_if_compatible'
+                self.sf6LodPolicy = resolved.get('sf6LodPolicy', 'retain_if_compatible')
                 self.sf6LodChoice = self.sf6LodPolicy
                 self.sf6HybridPreserve = False
             except ValueError:
@@ -791,9 +787,14 @@ class ExportSF6ModFolder(bpy.types.Operator):
             layout.prop(self, 'selectedOnly')
             layout.prop(self, 'exportBlendShapes')
             layout.prop(self, 'rotate90')
-            layout.prop(self, 'sf6AdvancedOptions', icon='TRIA_DOWN' if self.sf6AdvancedOptions else 'TRIA_RIGHT')
-            if self.sf6AdvancedOptions:
+            # Level of Detail is Automatic for almost everyone, so it lives in
+            # Advanced. A saved "LOD0 Only" keeps the section open so a
+            # non-default choice is never hidden.
+            advanced_open = bool(self.sf6AdvancedOptions or self.sf6LodChoice == 'lod0')
+            layout.prop(self, 'sf6AdvancedOptions', icon='TRIA_DOWN' if advanced_open else 'TRIA_RIGHT')
+            if advanced_open:
                 box = layout.box()
+                box.prop(self, 'sf6LodChoice')
                 for key in package.PROCESSING_DEFAULT_FIELDS:
                     box.prop(self, key)
         from .sf6_unified_dialogs import draw_details_button

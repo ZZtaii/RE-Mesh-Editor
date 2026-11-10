@@ -315,8 +315,13 @@ def _wrapped(lines, width=93):
     return output
 
 
-def review_lines(review, *, history=False):
-    """Complete readable lines; no loss or key-name truncation."""
+def review_lines(review, *, history=False, groups=None):
+    """Complete readable lines; no loss or key-name truncation.
+
+    When ``groups`` is a list, each loss and the retained-section block is
+    recorded in it as ``dict(start, end, header)`` (line range and a one-line
+    summary) so the review can show them collapsed.
+    """
     lines = []
     messages = _messages()
     files = review.get('files', review.get('report', {}).get('files', []))
@@ -344,6 +349,7 @@ def review_lines(review, *, history=False):
         obj = str(loss.get('object', ''))
         material = str(loss.get('material') or ', '.join(loss.get('materials', [])))
         names = loss.get('shape_names', [])
+        group_start = len(lines)
         lines.append(f'{index}. {scope.title()}: {obj}' + (f' / {material}' if material else ''))
         if messages:
             card = messages.review_card(loss, retained_sections=(len(retained) if isinstance(retained, list) else retained),
@@ -363,7 +369,12 @@ def review_lines(review, *, history=False):
         if not names:
             lines.append('  No known shape-key names could be identified.')
         lines.append('')
+        if groups is not None:
+            count = (str(len(names)) + (' shape key' if len(names) == 1 else ' shape keys')) if names else 'shape keys'
+            groups.append(dict(start=group_start, end=len(lines),
+                               header=lines[group_start] + '  (' + count + ' not exported)'))
     if retained:
+        group_start = len(lines)
         lines.append('Retained sections:')
         for section in retained if isinstance(retained, list) else []:
             if isinstance(section, dict):
@@ -371,6 +382,10 @@ def review_lines(review, *, history=False):
                 lines.extend('  ' + str(name) for name in section.get('shape_names', section.get('key_names', [])))
             else:
                 lines.append(str(section))
+        if groups is not None:
+            count = len(retained) if isinstance(retained, list) else retained
+            groups.append(dict(start=group_start, end=len(lines),
+                               header='Sections that keep their shape keys: ' + str(count)))
     if not lines:
         if review.get('conflicts'):
             lines.append('Review Preserve Bone Matrices for the edited rest rig before exporting.')
@@ -591,15 +606,21 @@ def skip_review_enabled():
     return bool(getattr(_preferences(), 'sf6SkipExportReview', False))
 
 
-def draw_details_button(layout, *, skip_option=True):
-    # Secondary controls: keep them small so they never read as a main choice.
+def draw_details_button(layout, *, skip_option=True, details=False):
+    """Small secondary controls for the export dialogs.
+
+    The full report matters after a failure or for a bug report, not while
+    choosing settings, so the Details button only appears where asked for
+    (the RE Mesh sidebar panel and a finished or failed review).
+    """
     row = layout.row()
     preferences = _preferences()
     if skip_option and preferences is not None and hasattr(preferences, 'sf6SkipExportReview'):
         row.prop(preferences, 'sf6SkipExportReview', text='Skip review window, export anyway')
-    side = row.row()
-    side.alignment = 'RIGHT'
-    side.operator('re_mesh.sf6_export_details', text='Details', icon='TEXT')
+    if details:
+        side = row.row()
+        side.alignment = 'RIGHT'
+        side.operator('re_mesh.sf6_export_details', text='Details', icon='TEXT')
 
 
 def _confirm_label(request):
@@ -690,6 +711,11 @@ if bpy is not None:
 
     class SF6ReviewLine(bpy.types.PropertyGroup):
         text: StringProperty(options={'SKIP_SAVE'})
+        # Lines of one loss share a group; its header row collapses the rest.
+        group: IntProperty(default=-1, options={'SKIP_SAVE'})
+        is_header: BoolProperty(default=False, options={'SKIP_SAVE'})
+        expanded: BoolProperty(name='Show details', default=False, options={'SKIP_SAVE'},
+                               description='Show or hide the details of this item')
 
     class SF6ReviewOwner(bpy.types.PropertyGroup):
         request_id: StringProperty(options={'SKIP_SAVE'})
@@ -701,7 +727,25 @@ if bpy is not None:
     class SF6_UL_review_lines(bpy.types.UIList):
         def draw_item(self, context, layout, data, item, icon, active_data,
                       active_propname, index=0, flt_flag=0):
-            layout.label(text=item.text)
+            if item.is_header:
+                row = layout.row()
+                row.alignment = 'LEFT'
+                row.prop(item, 'expanded', text=item.text, emboss=False,
+                         icon='TRIA_DOWN' if item.expanded else 'TRIA_RIGHT')
+            else:
+                layout.label(text=('      ' + item.text) if item.group >= 0 else item.text)
+
+        def filter_items(self, context, data, propname):
+            # Hide the lines of every collapsed group; headers always show.
+            return [self.bitflag_filter_item if _line_visible(item, open_groups) else 0
+                    for open_groups in (_open_groups(getattr(data, propname)),)
+                    for item in getattr(data, propname)], []
+
+    def _open_groups(items):
+        return {item.group for item in items if item.is_header and item.expanded}
+
+    def _line_visible(item, open_groups):
+        return item.group < 0 or item.is_header or item.group in open_groups
 
     def _sync_rows(context, request):
         global _SYNCING
@@ -709,15 +753,23 @@ if bpy is not None:
         try:
             wm = context.window_manager
             wm.sf6_review_lines.clear()
-            for line in _wrapped(review_lines(request.review), 116):
-                wm.sf6_review_lines.add().text = line
+            # Each loss starts collapsed to its one-line summary.
+            groups = []
+            lines = review_lines(request.review, groups=groups)
+            owner = {index: number for number, group in enumerate(groups)
+                     for index in range(group['start'], group['end'])}
+            for index, line in enumerate(lines):
+                number = owner.get(index, -1)
+                header = number >= 0 and index == groups[number]['start']
+                if number >= 0 and not header and not line.strip():
+                    continue
+                for part in _wrapped([groups[number]['header'] if header else line], 116):
+                    row = wm.sf6_review_lines.add()
+                    row.text = part
+                    row.group = number
+                    row.is_header = header
+                    header = False
             wm.sf6_review_line_index = 0
-            wm.sf6_detail_lines.clear()
-            report = request.result or dict(request.review, scope=request.operation,
-                destination=request.payload.get('path', request.payload.get('destination', '')))
-            for line in _wrapped(details_lines(report), 116):
-                wm.sf6_detail_lines.add().text = line
-            wm.sf6_detail_line_index = 0
             wm.sf6_review_owners.clear()
             for group in request.review.get('duplicate_groups', []):
                 row = wm.sf6_review_owners.add()
@@ -745,8 +797,6 @@ if bpy is not None:
         preserve_bone_matrices: BoolProperty(name='Preserve Bone Matrices',
                                              default=True, update=_rig_update,
                                              options={'SKIP_SAVE'})
-        show_details: BoolProperty(name='Details', default=False, options={'SKIP_SAVE'},
-                                   description='Show the full export report here')
         legacy_popup: BoolProperty(default=False, options={'HIDDEN', 'SKIP_SAVE'})
 
         def invoke(self, context, event):
@@ -816,7 +866,7 @@ if bpy is not None:
                 return
             if request.state in ('cancelled', 'published', 'failed'):
                 layout.label(text='Export ' + request.state + '.')
-                draw_details_button(layout, skip_option=False)
+                draw_details_button(layout, skip_option=False, details=True)
                 return
             if self.legacy_popup:
                 layout.label(text='Review SF6 export', icon='EXPORT')
@@ -844,9 +894,13 @@ if bpy is not None:
                 layout.label(text='The scene or export settings changed. Review the updated plan.', icon='ERROR')
             if request.state == 'dirty':
                 layout.label(text='Choices changed. Review the updated losses before exporting.', icon='INFO')
+            review_rows = context.window_manager.sf6_review_lines
+            open_groups = _open_groups(review_rows)
+            visible = sum(1 for item in review_rows if _line_visible(item, open_groups))
+            rows = max(3, min(12, visible))
             layout.template_list('SF6_UL_review_lines', '', context.window_manager,
                                  'sf6_review_lines', context.window_manager,
-                                 'sf6_review_line_index', rows=12, maxrows=12)
+                                 'sf6_review_line_index', rows=rows, maxrows=rows)
             # The dialog's own confirm button approves exactly this revision.
             request.shown_revision = request.revision if request.state == 'ready' else None
             if self.legacy_popup:
@@ -865,19 +919,6 @@ if bpy is not None:
                 action = column.operator('re_mesh.sf6_review_continue', text=_confirm_label(request), icon='EXPORT')
                 action.request_id = request.id
                 action.revision = request.revision
-            row = layout.row()
-            toggle = row.row()
-            toggle.alignment = 'LEFT'
-            toggle.prop(self, 'show_details', emboss=False,
-                        icon='TRIA_DOWN' if self.show_details else 'TRIA_RIGHT')
-            side = row.row()
-            side.alignment = 'RIGHT'
-            details = side.operator('re_mesh.sf6_export_details', text='Open in Window', icon='WINDOW')
-            details.request_id = request.id
-            if self.show_details:
-                layout.template_list('SF6_UL_review_lines', 'details', context.window_manager,
-                                     'sf6_detail_lines', context.window_manager,
-                                     'sf6_detail_line_index', rows=10, maxrows=10)
             preferences = _preferences()
             if preferences is not None and hasattr(preferences, 'sf6SkipExportReview'):
                 layout.prop(preferences, 'sf6SkipExportReview',
@@ -978,8 +1019,8 @@ if bpy is not None:
             if request and request.state not in ('cancelled', 'published', 'failed'):
                 action = self.layout.operator('re_mesh.sf6_export_review', text='Review pending export', icon='EXPORT')
                 action.request_id = request.id
-            draw_details_button(self.layout)
-            self.layout.label(text='Readable report in Blender’s Text Editor.')
+            draw_details_button(self.layout, details=True)
+            self.layout.label(text='Full report of the last export, in its own window.')
 
     class SF6_OT_details_return(bpy.types.Operator):
         bl_idname = 're_mesh.sf6_details_return'
@@ -1072,8 +1113,6 @@ def register():
     bpy.types.WindowManager.sf6_review_lines = CollectionProperty(type=SF6ReviewLine, options={'SKIP_SAVE'})
     bpy.types.WindowManager.sf6_review_line_index = IntProperty(options={'SKIP_SAVE'})
     bpy.types.WindowManager.sf6_review_owners = CollectionProperty(type=SF6ReviewOwner, options={'SKIP_SAVE'})
-    bpy.types.WindowManager.sf6_detail_lines = CollectionProperty(type=SF6ReviewLine, options={'SKIP_SAVE'})
-    bpy.types.WindowManager.sf6_detail_line_index = IntProperty(options={'SKIP_SAVE'})
     bpy.types.TEXT_HT_header.append(_details_header)
 
 
@@ -1081,8 +1120,7 @@ def unregister():
     for request in list(_REQUESTS.values()):
         request.cancel()
     bpy.types.TEXT_HT_header.remove(_details_header)
-    for name in ('sf6_review_lines', 'sf6_review_line_index', 'sf6_review_owners',
-                 'sf6_detail_lines', 'sf6_detail_line_index'):
+    for name in ('sf6_review_lines', 'sf6_review_line_index', 'sf6_review_owners'):
         if hasattr(bpy.types.WindowManager, name):
             delattr(bpy.types.WindowManager, name)
     for cls in reversed(CLASSES):
