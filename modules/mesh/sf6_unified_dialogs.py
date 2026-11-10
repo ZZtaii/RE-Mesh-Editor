@@ -318,9 +318,10 @@ def _wrapped(lines, width=93):
 def review_lines(review, *, history=False, groups=None):
     """Complete readable lines; no loss or key-name truncation.
 
-    When ``groups`` is a list, each loss and the retained-section block is
-    recorded in it as ``dict(start, end, header)`` (line range and a one-line
-    summary) so the review can show them collapsed.
+    When ``groups`` is a list, each loss, each key list inside it, the
+    retained-section block and each section inside that are recorded in it as
+    ``dict(start, end, header)`` (line range and a one-line summary). Ranges
+    nest, so the review can show them as a collapsed two-level tree.
     """
     lines = []
     messages = _messages()
@@ -364,10 +365,13 @@ def review_lines(review, *, history=False, groups=None):
             lines.append('Reason: ' + str(loss.get('reason', loss.get('source_reason', ''))))
             if loss.get('source_status') == 'unverified':
                 lines.append('Original corrective shapes may be unavailable to identify.')
+        keys_start = len(lines)
         lines.append('Keys not exported:')
         lines.extend('  ' + str(name) for name in names)
         if not names:
             lines.append('  No known shape-key names could be identified.')
+        if groups is not None and names:
+            groups.append(dict(start=keys_start, end=len(lines), header='Keys not exported: ' + str(len(names))))
         lines.append('')
         if groups is not None:
             count = (str(len(names)) + (' shape key' if len(names) == 1 else ' shape keys')) if names else 'shape keys'
@@ -378,8 +382,14 @@ def review_lines(review, *, history=False, groups=None):
         lines.append('Retained sections:')
         for section in retained if isinstance(retained, list) else []:
             if isinstance(section, dict):
+                section_start = len(lines)
+                section_names = section.get('shape_names', section.get('key_names', []))
                 lines.append(str(section.get('object', '')) + ' / ' + str(section.get('material', '')))
-                lines.extend('  ' + str(name) for name in section.get('shape_names', section.get('key_names', [])))
+                lines.extend('  ' + str(name) for name in section_names)
+                if groups is not None and section_names:
+                    groups.append(dict(start=section_start, end=len(lines),
+                                       header=lines[section_start] + '  (' + str(len(section_names)) +
+                                       (' shape key)' if len(section_names) == 1 else ' shape keys)')))
             else:
                 lines.append(str(section))
         if groups is not None:
@@ -711,8 +721,10 @@ if bpy is not None:
 
     class SF6ReviewLine(bpy.types.PropertyGroup):
         text: StringProperty(options={'SKIP_SAVE'})
-        # Lines of one loss share a group; its header row collapses the rest.
-        group: IntProperty(default=-1, options={'SKIP_SAVE'})
+        # A small tree: ``parent`` is the row index of the header this line
+        # sits under (-1 at the top); a line shows when all its headers are open.
+        parent: IntProperty(default=-1, options={'SKIP_SAVE'})
+        level: IntProperty(default=0, options={'SKIP_SAVE'})
         is_header: BoolProperty(default=False, options={'SKIP_SAVE'})
         expanded: BoolProperty(name='Show details', default=False, options={'SKIP_SAVE'},
                                description='Show or hide the details of this item')
@@ -727,25 +739,35 @@ if bpy is not None:
     class SF6_UL_review_lines(bpy.types.UIList):
         def draw_item(self, context, layout, data, item, icon, active_data,
                       active_propname, index=0, flt_flag=0):
+            indent = '      ' * item.level
             if item.is_header:
                 row = layout.row()
                 row.alignment = 'LEFT'
+                if indent:
+                    row.label(text=indent)
                 row.prop(item, 'expanded', text=item.text, emboss=False,
                          icon='TRIA_DOWN' if item.expanded else 'TRIA_RIGHT')
             else:
-                layout.label(text=('      ' + item.text) if item.group >= 0 else item.text)
+                # Past the arrow, so the text lines up under its header's text.
+                layout.label(text=(' ' * (item.level * 10 + 1) if item.level else '') + item.text)
 
         def filter_items(self, context, data, propname):
-            # Hide the lines of every collapsed group; headers always show.
-            return [self.bitflag_filter_item if _line_visible(item, open_groups) else 0
-                    for open_groups in (_open_groups(getattr(data, propname)),)
-                    for item in getattr(data, propname)], []
+            # Hide every line that sits under a collapsed header.
+            return [self.bitflag_filter_item if shown else 0
+                    for shown in _visible_lines(getattr(data, propname))], []
 
-    def _open_groups(items):
-        return {item.group for item in items if item.is_header and item.expanded}
-
-    def _line_visible(item, open_groups):
-        return item.group < 0 or item.is_header or item.group in open_groups
+    def _visible_lines(items):
+        """One flag per row: True when every header above it is expanded."""
+        flags = []
+        for item in items:
+            parent, shown = item.parent, True
+            while parent >= 0:
+                if not items[parent].expanded:
+                    shown = False
+                    break
+                parent = items[parent].parent
+            flags.append(shown)
+        return flags
 
     def _sync_rows(context, request):
         global _SYNCING
@@ -753,22 +775,30 @@ if bpy is not None:
         try:
             wm = context.window_manager
             wm.sf6_review_lines.clear()
-            # Each loss starts collapsed to its one-line summary.
+            # Every group starts collapsed to its one-line summary. Opening a
+            # top-level group shows its sub-groups, still collapsed.
             groups = []
             lines = review_lines(request.review, groups=groups)
-            owner = {index: number for number, group in enumerate(groups)
-                     for index in range(group['start'], group['end'])}
+            starts = {group['start']: group for group in groups}
+            open_headers = []  # (end line, row index) of the enclosing groups
             for index, line in enumerate(lines):
-                number = owner.get(index, -1)
-                header = number >= 0 and index == groups[number]['start']
-                if number >= 0 and not header and not line.strip():
+                while open_headers and index >= open_headers[-1][0]:
+                    open_headers.pop()
+                group = starts.get(index)
+                if group is None and open_headers and not line.strip():
                     continue
-                for part in _wrapped([groups[number]['header'] if header else line], 116):
+                parent = open_headers[-1][1] if open_headers else -1
+                level = len(open_headers)
+                first = True
+                for part in _wrapped([group['header'] if group else line.strip() if open_headers else line], 116):
                     row = wm.sf6_review_lines.add()
                     row.text = part
-                    row.group = number
-                    row.is_header = header
-                    header = False
+                    row.parent = parent
+                    row.level = level
+                    row.is_header = bool(group) and first
+                    if row.is_header:
+                        open_headers.append((group['end'], len(wm.sf6_review_lines) - 1))
+                    first = False
             wm.sf6_review_line_index = 0
             wm.sf6_review_owners.clear()
             for group in request.review.get('duplicate_groups', []):
@@ -894,10 +924,7 @@ if bpy is not None:
                 layout.label(text='The scene or export settings changed. Review the updated plan.', icon='ERROR')
             if request.state == 'dirty':
                 layout.label(text='Choices changed. Review the updated losses before exporting.', icon='INFO')
-            review_rows = context.window_manager.sf6_review_lines
-            open_groups = _open_groups(review_rows)
-            visible = sum(1 for item in review_rows if _line_visible(item, open_groups))
-            rows = max(3, min(12, visible))
+            rows = max(3, min(12, sum(_visible_lines(context.window_manager.sf6_review_lines))))
             layout.template_list('SF6_UL_review_lines', '', context.window_manager,
                                  'sf6_review_lines', context.window_manager,
                                  'sf6_review_line_index', rows=rows, maxrows=rows)

@@ -738,6 +738,18 @@ class ExportSF6ModFolder(bpy.types.Operator):
         update_destination_notice(self, context)
         return context.window_manager.invoke_props_dialog(self, width=650, confirm_text='Review and Export')
 
+    @staticmethod
+    def _field_note(layout, label, lines, icon='NONE'):
+        """Text placed like a field: label on the left, tight lines on the right."""
+        split = layout.split(factor=0.4)
+        left = split.row()
+        left.alignment = 'RIGHT'
+        left.label(text=label)
+        column = split.column(align=True)
+        column.scale_y = 0.8
+        for index, line in enumerate(lines):
+            column.label(text=line, icon=icon if index == 0 else 'NONE')
+
     def draw(self, context):
         layout = self.layout
         layout.use_property_split = True
@@ -749,7 +761,9 @@ class ExportSF6ModFolder(bpy.types.Operator):
         try:
             asset = package.asset_from_collection(collection) if collection and self.export_content == 'MESH' else None
             if asset and self.export_content == 'MESH':
-                layout.label(text=f'{asset.character_name} (esf{asset.character})  |  Costume {asset.costume}  |  {asset.slot_name} ({asset.slot})')
+                # Read-only facts sit in the same two columns as the fields.
+                self._field_note(layout, 'Detected', [f'{asset.character_name} (esf{asset.character}), '
+                                                      f'Costume {asset.costume}, {asset.slot_name} ({asset.slot})'])
         except ValueError as error:
             layout.label(text=str(error), icon='ERROR')
         layout.separator()
@@ -757,15 +771,13 @@ class ExportSF6ModFolder(bpy.types.Operator):
         layout.prop(self, 'folder_name')
         layout.prop(self, 'destination')
         if self.destination_notice:
-            # One icon beside a tight text column: lines fill the width, stay
-            # aligned with each other and sit close together.
-            row = layout.box().row()
-            row.label(text='', icon='INFO')
-            text_column = row.column(align=True)
-            text_column.scale_y = 0.75
-            for paragraph in self.destination_notice.splitlines():
-                for line in (textwrap.wrap(paragraph, width=96) or ['']):
-                    text_column.label(text=line)
+            # Shown like a field so it lines up with Destination above it.
+            notice, label, icon = self.destination_notice, '', 'ERROR'
+            prefix = 'Folder already contains '
+            if notice.startswith(prefix):
+                notice, label, icon = 'Contains ' + notice[len(prefix):], 'Existing Folder', 'NONE'
+            self._field_note(layout, label, [line for paragraph in notice.splitlines()
+                                             for line in (textwrap.wrap(paragraph, width=60) or [''])], icon=icon)
         layout.separator()
         for name in ('mod_name', 'mod_version', 'mod_author', 'mod_category', 'extra_categories', 'mod_description', 'preview_path'):
             layout.prop(self, name)
