@@ -656,9 +656,11 @@ class ExportSF6ModFolder(bpy.types.Operator):
     sf6UnifiedOptIn: BoolProperty(default=True, options={'HIDDEN', 'SKIP_SAVE'})
     sf6LegacyAPI: BoolProperty(default=False, options={'HIDDEN', 'SKIP_SAVE'})
     sf6AdvancedOptions: BoolProperty(name='Advanced Export Settings', default=False, options={'SKIP_SAVE'})
+    show_bundle_options: BoolProperty(name='Bundles and Add-on Menus', default=False, options={'SKIP_SAVE'},
+        description='Group this mod into a bundle or under a parent mod in Fluffy Mod Manager')
     sf6LodChoice: EnumProperty(name='Level of Detail', default='retain_if_compatible', update=update_lod_choice,
-        items=(('retain_if_compatible', 'Keep Compatible LODs', 'Retain lower LODs only when compatibility is verified'),
-               ('lod0', 'LOD0 Only', 'Export the highest-detail LOD only')), options={'SKIP_SAVE'})
+        items=(('retain_if_compatible', 'Automatic', 'Keep the lower LODs when the mesh is unchanged; export only LOD0 once it has been edited'),
+               ('lod0', 'LOD0 Only', 'Always export only the highest-detail LOD, even for an unchanged mesh')), options={'SKIP_SAVE'})
     sf6ReviewOnly: BoolProperty(default=False, options={'HIDDEN', 'SKIP_SAVE'})
     sf6ExportWorkflow: StringProperty(default='', options={'HIDDEN', 'SKIP_SAVE'})
     sf6LodPolicy: StringProperty(default='', options={'HIDDEN', 'SKIP_SAVE'})
@@ -711,7 +713,11 @@ class ExportSF6ModFolder(bpy.types.Operator):
                     exportBlendShapes=self.exportBlendShapes, sf6HybridPreserve=self.sf6HybridPreserve,
                     selectedOnly=self.selectedOnly, rotate90=self.rotate90,
                     exportAllLODs=preferences.default_exportAllLODs))
-                self.sf6LodPolicy = resolved.get('sf6LodPolicy', 'retain_if_compatible')
+                # The dialog no longer offers a LOD choice: lower LODs are kept
+                # whenever the mesh is unchanged. A saved "LOD0 Only" from an
+                # earlier build must not linger where it can no longer be seen.
+                # Scripts can still pass sf6LodPolicy explicitly.
+                self.sf6LodPolicy = 'retain_if_compatible'
                 self.sf6LodChoice = self.sf6LodPolicy
                 self.sf6HybridPreserve = False
             except ValueError:
@@ -755,29 +761,35 @@ class ExportSF6ModFolder(bpy.types.Operator):
         layout.prop(self, 'folder_name')
         layout.prop(self, 'destination')
         if self.destination_notice:
-            notice = layout.box()
-            lines = [line for paragraph in self.destination_notice.splitlines()
-                     for line in (textwrap.wrap(paragraph, width=85) or [''])]
-            for index, line in enumerate(lines):
-                notice.label(text=line, icon='INFO' if index == 0 else 'NONE')
+            # One icon beside a tight text column: lines fill the width, stay
+            # aligned with each other and sit close together.
+            row = layout.box().row()
+            row.label(text='', icon='INFO')
+            text_column = row.column(align=True)
+            text_column.scale_y = 0.75
+            for paragraph in self.destination_notice.splitlines():
+                for line in (textwrap.wrap(paragraph, width=96) or ['']):
+                    text_column.label(text=line)
         layout.separator()
         for name in ('mod_name', 'mod_version', 'mod_author', 'mod_category', 'extra_categories', 'mod_description', 'preview_path'):
             layout.prop(self, name)
-        grouping = layout.box()
-        grouping.label(text='Bundles and Add-on Menus')
-        grouping.prop(self, 'bundle_name')
-        grouping.prop(self, 'parent_mod_name')
-        if self.parent_mod_name:
-            grouping.prop(self, 'create_dummy_parent')
-            if self.create_dummy_parent:
-                grouping.prop(self, 'parent_folder_name')
-                grouping.prop(self, 'parent_categories')
-                grouping.prop(self, 'parent_destination')
+        # Collapsed unless used, like Advanced Export Settings below.
+        bundles_open = bool(self.show_bundle_options or self.bundle_name or self.parent_mod_name)
+        layout.prop(self, 'show_bundle_options', icon='TRIA_DOWN' if bundles_open else 'TRIA_RIGHT')
+        if bundles_open:
+            grouping = layout.box()
+            grouping.prop(self, 'bundle_name')
+            grouping.prop(self, 'parent_mod_name')
+            if self.parent_mod_name:
+                grouping.prop(self, 'create_dummy_parent')
+                if self.create_dummy_parent:
+                    grouping.prop(self, 'parent_folder_name')
+                    grouping.prop(self, 'parent_categories')
+                    grouping.prop(self, 'parent_destination')
         if self.export_content == 'MESH':
             layout.separator()
             layout.prop(self, 'selectedOnly')
             layout.prop(self, 'exportBlendShapes')
-            layout.prop(self, 'sf6LodChoice')
             layout.prop(self, 'rotate90')
             layout.prop(self, 'sf6AdvancedOptions', icon='TRIA_DOWN' if self.sf6AdvancedOptions else 'TRIA_RIGHT')
             if self.sf6AdvancedOptions:

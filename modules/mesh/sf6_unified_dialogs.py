@@ -709,13 +709,13 @@ if bpy is not None:
         try:
             wm = context.window_manager
             wm.sf6_review_lines.clear()
-            for line in _wrapped(review_lines(request.review)):
+            for line in _wrapped(review_lines(request.review), 116):
                 wm.sf6_review_lines.add().text = line
             wm.sf6_review_line_index = 0
             wm.sf6_detail_lines.clear()
             report = request.result or dict(request.review, scope=request.operation,
                 destination=request.payload.get('path', request.payload.get('destination', '')))
-            for line in _wrapped(details_lines(report)):
+            for line in _wrapped(details_lines(report), 116):
                 wm.sf6_detail_lines.add().text = line
             wm.sf6_detail_line_index = 0
             wm.sf6_review_owners.clear()
@@ -823,7 +823,7 @@ if bpy is not None:
             destination = request.payload.get('path', request.payload.get('destination', request.review.get('destination', '')))
             files = request.review.get('files', request.review.get('report', {}).get('files', []))
             destination_label = ('Destination: ' + str(destination)) if destination else ('Batch export: ' + str(len(files)) + (' file. Destination is listed below.' if len(files) == 1 else ' files. Destinations are listed below.') if files else 'Destination is listed in Details.')
-            for line in _wrapped([destination_label], 95):
+            for line in _wrapped([destination_label], 120):
                 layout.label(text=line)
             for owner in context.window_manager.sf6_review_owners:
                 box = layout.box()
@@ -866,8 +866,10 @@ if bpy is not None:
                 action.request_id = request.id
                 action.revision = request.revision
             row = layout.row()
-            row.prop(self, 'show_details', emboss=False,
-                     icon='TRIA_DOWN' if self.show_details else 'TRIA_RIGHT')
+            toggle = row.row()
+            toggle.alignment = 'LEFT'
+            toggle.prop(self, 'show_details', emboss=False,
+                        icon='TRIA_DOWN' if self.show_details else 'TRIA_RIGHT')
             side = row.row()
             side.alignment = 'RIGHT'
             details = side.operator('re_mesh.sf6_export_details', text='Open in Window', icon='WINDOW')
