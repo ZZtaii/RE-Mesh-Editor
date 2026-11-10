@@ -581,6 +581,10 @@ class REMeshPreferences(AddonPreferences):
 	   name = "SF6: Preserve Source Data",
 	   description = "Preserve supported SF6 source data; requires an original imported with Preserve Source + Shape Keys. Disable explicitly to use ordinary export",
 	   default = True)
+	sf6SkipExportReview : BoolProperty(
+	   name = "SF6: Skip Export Review",
+	   description = "Export straight away instead of showing the review window. Shape keys and LODs that cannot be kept are dropped without asking, and the result message and Details list what was dropped. The review still appears when a choice is required, such as a rig conflict or two objects claiming the same shape keys",
+	   default = False)
 	default_rotate90export : BoolProperty(
 	   name = "Convert Z Up To Y Up",
 	   description = "Rotates objects 90 degrees for export. Leaving this option enabled is recommended",
@@ -638,7 +642,8 @@ class REMeshPreferences(AddonPreferences):
 		layout.prop(self, "useDDS")
 		layout.prop(self, "convertTexToPNG")
 		layout.prop(self, "modFileTrackingPollingRate")
-		
+		layout.prop(self, "sf6SkipExportReview")
+
 		box = layout.box()
 		row = box.row()
 		

@@ -8,8 +8,9 @@ MUST NOT publish. ``publish`` returns the actual publication report, including
 partial/uncertain folder outcomes. Neither callback may infer loss approval.
 An optional current_payload callback detects edits to live caller fields.
 
-Only the explicit continue operator calls ReviewRequest.approve. Popup
-dismissal, Enter, owner choices, refresh, Details and rig changes never call it.
+Only the review dialog's confirm button (or the continue operator of the legacy
+popup) calls ReviewRequest.approve, and only for the revision that was drawn.
+Dismissal, Enter, owner choices, refresh, Details and rig changes never call it.
 Requests and approvals are execution-only, never stored in a .blend. Readable
 result Details are stored separately as a Blender Text datablock.
 """
@@ -564,7 +565,10 @@ def begin_review(context, *, operation, payload, prepare=standard_prepare, publi
     _prune_requests()
     request.prepare()
     if bpy is not None and not bpy.app.background:
-        if request.state == 'ready' and not request.review.get('requires_loss_approval'):
+        # Skipping the window is the user's standing approval of the listed
+        # losses. Anything that needs an actual choice still opens the review.
+        if request.state == 'ready' and (skip_review_enabled() or
+                                         not request.review.get('requires_loss_approval')):
             request.approve(request.revision)
             if request.state == 'published':
                 return {'FINISHED'}
@@ -575,8 +579,75 @@ def begin_review(context, *, operation, payload, prepare=standard_prepare, publi
     return request
 
 
-def draw_details_button(layout):
-    layout.operator('re_mesh.sf6_export_details', text='Details', icon='TEXT')
+def _preferences():
+    """The add-on preferences, or None outside Blender or before registration."""
+    if bpy is None:
+        return None
+    addon = bpy.context.preferences.addons.get((__package__ or '').split('.')[0])
+    return getattr(addon, 'preferences', None)
+
+
+def skip_review_enabled():
+    return bool(getattr(_preferences(), 'sf6SkipExportReview', False))
+
+
+def draw_details_button(layout, *, skip_option=True):
+    # Secondary controls: keep them small so they never read as a main choice.
+    row = layout.row()
+    preferences = _preferences()
+    if skip_option and preferences is not None and hasattr(preferences, 'sf6SkipExportReview'):
+        row.prop(preferences, 'sf6SkipExportReview', text='Skip review window, export anyway')
+    side = row.row()
+    side.alignment = 'RIGHT'
+    side.operator('re_mesh.sf6_export_details', text='Details', icon='TEXT')
+
+
+def _confirm_label(request):
+    if request.state != 'ready':
+        return 'Review updated plan'
+    losses = request.review.get('losses', [])
+    if any(loss.get('scope') == 'output' for loss in losses):
+        return 'Export without blend shapes'
+    return 'Export without these shape keys' if request.review.get('requires_loss_approval') else 'Export'
+
+
+def _is_details_window(context):
+    """A separate window that only shows the details report."""
+    window = context.window
+    windows = context.window_manager.windows
+    if window is None or len(windows) < 2 or window == windows[0] or len(window.screen.areas) != 1:
+        return False
+    space = window.screen.areas[0].spaces.active
+    return getattr(getattr(space, 'text', None), 'name', None) == DETAILS_NAME
+
+
+def _show_details_window(context, text):
+    """Open the report in its own window so an open dialog never hides it."""
+    def show(area):
+        area.type = 'TEXT_EDITOR'
+        space = area.spaces.active
+        space.text = text
+        space.show_word_wrap = True
+        space.show_line_numbers = False
+        space.show_syntax_highlight = False
+        space.top = 0
+    manager = context.window_manager
+    for window in tuple(manager.windows)[1:]:
+        areas = window.screen.areas
+        if len(areas) == 1 and getattr(getattr(areas[0].spaces.active, 'text', None), 'name', None) == DETAILS_NAME:
+            show(areas[0])
+            areas[0].tag_redraw()
+            return True
+    before = set(manager.windows)
+    try:
+        bpy.ops.screen.info_log_show('INVOKE_DEFAULT')
+    except (AttributeError, RuntimeError):
+        return False
+    created = [window for window in manager.windows if window not in before]
+    if not created or not created[0].screen.areas:
+        return False
+    show(created[0].screen.areas[0])
+    return True
 
 
 if bpy is not None:
@@ -641,6 +712,12 @@ if bpy is not None:
             for line in _wrapped(review_lines(request.review)):
                 wm.sf6_review_lines.add().text = line
             wm.sf6_review_line_index = 0
+            wm.sf6_detail_lines.clear()
+            report = request.result or dict(request.review, scope=request.operation,
+                destination=request.payload.get('path', request.payload.get('destination', '')))
+            for line in _wrapped(details_lines(report)):
+                wm.sf6_detail_lines.add().text = line
+            wm.sf6_detail_line_index = 0
             wm.sf6_review_owners.clear()
             for group in request.review.get('duplicate_groups', []):
                 row = wm.sf6_review_owners.add()
@@ -668,6 +745,9 @@ if bpy is not None:
         preserve_bone_matrices: BoolProperty(name='Preserve Bone Matrices',
                                              default=True, update=_rig_update,
                                              options={'SKIP_SAVE'})
+        show_details: BoolProperty(name='Details', default=False, options={'SKIP_SAVE'},
+                                   description='Show the full export report here')
+        legacy_popup: BoolProperty(default=False, options={'HIDDEN', 'SKIP_SAVE'})
 
         def invoke(self, context, event):
             global _SYNCING
@@ -677,6 +757,7 @@ if bpy is not None:
             self.view_nonce = uuid.uuid4().hex
             request.view_nonce = self.view_nonce
             request.showing_details = False
+            request.shown_revision = None
             _sync_rows(context, request)
             _SYNCING = True
             try:
@@ -684,14 +765,43 @@ if bpy is not None:
                     _options(request.payload).get('preserveBoneMatrices', True))
             finally:
                 _SYNCING = False
-            return context.window_manager.invoke_popup(self, width=790)
+            # A dialog stays open until a button is chosen. A plain popup closes
+            # as soon as the pointer leaves it, which used to cancel the export.
+            # Cancel is the default button, so Enter never exports.
+            try:
+                self.legacy_popup = False
+                return context.window_manager.invoke_props_dialog(self, width=790,
+                    title='Review SF6 export', confirm_text=_confirm_label(request), cancel_default=True)
+            except TypeError:
+                # Older Blender cannot make Cancel the default button.
+                self.legacy_popup = True
+                return context.window_manager.invoke_popup(self, width=790)
 
         def execute(self, context):
-            # Never an export action. Enter/implicit execution is cancellation.
             request = _request(self)
-            if request and request.view_nonce == self.view_nonce:
+            if not request or request.view_nonce != self.view_nonce:
+                return {'CANCELLED'}
+            if self.legacy_popup:
+                # Never an export action. Enter/implicit execution is cancellation.
                 request.cancel()
-            return {'CANCELLED'}
+                return {'CANCELLED'}
+            if request.state in ('cancelled', 'published', 'failed'):
+                return {'CANCELLED'}
+            if request.state != 'ready' or getattr(request, 'shown_revision', None) != request.revision:
+                # The confirm button only ever approves the plan that was shown.
+                request.prepare()
+                _reopen(context, request)
+                self.report({'WARNING'}, 'Review the updated export plan before exporting.')
+                return {'CANCELLED'}
+            published = request.approve(request.revision)
+            if published and not request.notification_owned:
+                self.report({'INFO'}, 'Export completed. Details are available in SF6 Export Details.')
+            elif request.state == 'failed' and not request.notification_owned:
+                self.report({'ERROR'}, 'Export stopped. Review SF6 Export Details.')
+            elif request.state not in ('published', 'failed'):
+                _reopen(context, request)
+                self.report({'WARNING'}, 'Review the updated export plan before exporting.')
+            return {'FINISHED'}
 
         def cancel(self, context):
             request = _request(self)
@@ -704,14 +814,12 @@ if bpy is not None:
             if not request:
                 layout.label(text='This export review is no longer available.')
                 return
-            if request.showing_details and request.state not in ('cancelled', 'published', 'failed'):
-                layout.label(text='Details are open. Press Esc to read the report.', icon='TEXT')
-                return
             if request.state in ('cancelled', 'published', 'failed'):
                 layout.label(text='Export ' + request.state + '.')
-                draw_details_button(layout)
+                draw_details_button(layout, skip_option=False)
                 return
-            layout.label(text='Review SF6 export', icon='EXPORT')
+            if self.legacy_popup:
+                layout.label(text='Review SF6 export', icon='EXPORT')
             destination = request.payload.get('path', request.payload.get('destination', request.review.get('destination', '')))
             files = request.review.get('files', request.review.get('report', {}).get('files', []))
             destination_label = ('Destination: ' + str(destination)) if destination else ('Batch export: ' + str(len(files)) + (' file. Destination is listed below.' if len(files) == 1 else ' files. Destinations are listed below.') if files else 'Destination is listed in Details.')
@@ -739,27 +847,39 @@ if bpy is not None:
             layout.template_list('SF6_UL_review_lines', '', context.window_manager,
                                  'sf6_review_lines', context.window_manager,
                                  'sf6_review_line_index', rows=12, maxrows=12)
-            row = layout.row(align=True)
-            cancel_column = row.row()
-            cancel_column.active_default = True
-            cancel = cancel_column.operator('re_mesh.sf6_review_cancel', text='Cancel export', icon='CANCEL')
-            cancel.request_id = request.id
+            # The dialog's own confirm button approves exactly this revision.
+            request.shown_revision = request.revision if request.state == 'ready' else None
+            if self.legacy_popup:
+                row = layout.row(align=True)
+                cancel_column = row.row()
+                cancel_column.active_default = True
+                cancel = cancel_column.operator('re_mesh.sf6_review_cancel', text='Cancel export', icon='CANCEL')
+                cancel.request_id = request.id
             if request.state in ('dirty', 'blocked', 'needs_owner_choice'):
-                refresh = row.operator('re_mesh.sf6_review_refresh', text='Review updated plan', icon='FILE_REFRESH')
+                refresh = layout.operator('re_mesh.sf6_review_refresh', text='Review updated plan', icon='FILE_REFRESH')
                 refresh.request_id = request.id
-            else:
-                losses = request.review.get('losses', [])
-                label = ('Export without blend shapes' if any(l.get('scope') == 'output' for l in losses)
-                         else 'Export without these shape keys' if request.review.get('requires_loss_approval')
-                         else 'Export')
+            elif self.legacy_popup:
                 column = row.row()
                 column.active_default = False
                 column.enabled = request.state == 'ready'
-                action = column.operator('re_mesh.sf6_review_continue', text=label, icon='EXPORT')
+                action = column.operator('re_mesh.sf6_review_continue', text=_confirm_label(request), icon='EXPORT')
                 action.request_id = request.id
                 action.revision = request.revision
-            details = layout.operator('re_mesh.sf6_export_details', text='Details', icon='TEXT')
+            row = layout.row()
+            row.prop(self, 'show_details', emboss=False,
+                     icon='TRIA_DOWN' if self.show_details else 'TRIA_RIGHT')
+            side = row.row()
+            side.alignment = 'RIGHT'
+            details = side.operator('re_mesh.sf6_export_details', text='Open in Window', icon='WINDOW')
             details.request_id = request.id
+            if self.show_details:
+                layout.template_list('SF6_UL_review_lines', 'details', context.window_manager,
+                                     'sf6_detail_lines', context.window_manager,
+                                     'sf6_detail_line_index', rows=10, maxrows=10)
+            preferences = _preferences()
+            if preferences is not None and hasattr(preferences, 'sf6SkipExportReview'):
+                layout.prop(preferences, 'sf6SkipExportReview',
+                            text='Skip this window next time and export anyway')
 
     class SF6_OT_review_cancel(bpy.types.Operator):
         bl_idname = 're_mesh.sf6_review_cancel'
@@ -820,8 +940,6 @@ if bpy is not None:
         def execute(self, context):
             request = _request(self)
             if request:
-                request.view_nonce = None
-                request.showing_details = True
                 report = request.result or dict(request.review, scope=request.operation,
                     destination=request.payload.get('path', request.payload.get('destination', '')))
                 remember_result(report, context=context)
@@ -829,6 +947,10 @@ if bpy is not None:
             if not text:
                 self.report({'INFO'}, 'No export details are available yet.')
                 return {'CANCELLED'}
+            # Its own window: turning the area under an open dialog into a
+            # Text Editor left the report hidden behind that dialog.
+            if _show_details_window(context, text):
+                return {'FINISHED'}
             area = context.area
             if area and area.type != 'FILE_BROWSER':
                 area.type = 'TEXT_EDITOR'
@@ -863,6 +985,9 @@ if bpy is not None:
         bl_options = {'INTERNAL'}
 
         def execute(self, context):
+            if _is_details_window(context):
+                bpy.ops.wm.window_close()
+                return {'FINISHED'}
             if context.area:
                 context.area.type = 'VIEW_3D'
             request = _REQUESTS.get(_ACTIVE.get(_window_key(context)))
@@ -894,17 +1019,20 @@ if bpy is not None:
             return context.space_data.text and context.space_data.text.name == DETAILS_NAME
 
         def draw(self, context):
-            request = _REQUESTS.get(_ACTIVE.get(_window_key(context)))
-            pending = request and request.state not in ('cancelled', 'published', 'failed')
-            self.layout.operator('re_mesh.sf6_details_return',
-                text='Back to export review' if pending else 'Back to 3D View', icon='BACK')
+            _draw_details_return(self.layout, context)
+
+    def _draw_details_return(layout, context):
+        if _is_details_window(context):
+            layout.operator('re_mesh.sf6_details_return', text='Close Details', icon='PANEL_CLOSE')
+            return
+        request = _REQUESTS.get(_ACTIVE.get(_window_key(context)))
+        pending = request and request.state not in ('cancelled', 'published', 'failed')
+        layout.operator('re_mesh.sf6_details_return',
+            text='Back to export review' if pending else 'Back to 3D View', icon='BACK')
 
     def _details_header(self, context):
         if context.space_data.text and context.space_data.text.name == DETAILS_NAME:
-            request = _REQUESTS.get(_ACTIVE.get(_window_key(context)))
-            pending = request and request.state not in ('cancelled', 'published', 'failed')
-            self.layout.operator('re_mesh.sf6_details_return',
-                text='Back to export review' if pending else 'Back to 3D View', icon='BACK')
+            _draw_details_return(self.layout, context)
 
     CLASSES = (SF6ReviewLine, SF6ReviewOwner, SF6_UL_review_lines,
                SF6_OT_export_review, SF6_OT_review_cancel, SF6_OT_review_refresh,
@@ -942,6 +1070,8 @@ def register():
     bpy.types.WindowManager.sf6_review_lines = CollectionProperty(type=SF6ReviewLine, options={'SKIP_SAVE'})
     bpy.types.WindowManager.sf6_review_line_index = IntProperty(options={'SKIP_SAVE'})
     bpy.types.WindowManager.sf6_review_owners = CollectionProperty(type=SF6ReviewOwner, options={'SKIP_SAVE'})
+    bpy.types.WindowManager.sf6_detail_lines = CollectionProperty(type=SF6ReviewLine, options={'SKIP_SAVE'})
+    bpy.types.WindowManager.sf6_detail_line_index = IntProperty(options={'SKIP_SAVE'})
     bpy.types.TEXT_HT_header.append(_details_header)
 
 
@@ -949,7 +1079,8 @@ def unregister():
     for request in list(_REQUESTS.values()):
         request.cancel()
     bpy.types.TEXT_HT_header.remove(_details_header)
-    for name in ('sf6_review_lines', 'sf6_review_line_index', 'sf6_review_owners'):
+    for name in ('sf6_review_lines', 'sf6_review_line_index', 'sf6_review_owners',
+                 'sf6_detail_lines', 'sf6_detail_line_index'):
         if hasattr(bpy.types.WindowManager, name):
             delattr(bpy.types.WindowManager, name)
     for cls in reversed(CLASSES):
