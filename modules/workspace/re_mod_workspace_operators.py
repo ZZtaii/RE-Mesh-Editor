@@ -868,7 +868,7 @@ class WM_OT_ConvertToREEngine(Operator):
 			bpy.ops.re_tex.convert_tex_directory(skipPrompt = True)
 			bpy.ops.re_tex.copy_converted_tex()
 			bpy.ops.re_mdf.apply_mdf()
-			showMessageBox("Model converted to RE Engine format." + "\nExisting objects in collection were moved into the \"Removed Meshes\" collection." if self.moveCollectionObjects else "",title = "RE Model Conversion")
+			showMessageBox("Model converted to RE Engine format." + ("\nExisting objects in collection were moved into the \"Removed Meshes\" collection." if self.moveCollectionObjects else ""),title = "RE Model Conversion")
 			self.report({"INFO"},"Converted selected models to RE Engine format.")
 			try: 
 				bpy.ops.wm.console_toggle()

@@ -144,7 +144,8 @@ def exportFBXSkelFile(filepath,targetArmature,usePose=True):
 			if bone.parent != None:
 				mat = exportArmatureData.bones[bone.parent.name].matrix_local.inverted() @ exportArmatureData.bones[bone.name].matrix_local
 			else:
-				mat = armatureObj.matrix_world @ exportArmatureData.bones[bone.name].matrix_local
+				# The copied data already includes the object transform and axis conversion.
+				mat = exportArmatureData.bones[bone.name].matrix_local
 			if usePose:
 				mat = mat @ armatureObj.pose.bones[bone.name].matrix_basis
 			transform,rotation,scale = mat.decompose()

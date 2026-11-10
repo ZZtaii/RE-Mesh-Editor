@@ -50,7 +50,7 @@ def main():
     addon = importlib.import_module(repo.name)
 
     assert addon.bl_info['author'] == 'ZZtaii', addon.bl_info['author']
-    assert addon.bl_info['version'][:2] == (0, 68), addon.bl_info['version']
+    assert addon.bl_info['version'][:2] == (0, 71), addon.bl_info['version']
 
     calls = []
     preferences = SimpleNamespace(

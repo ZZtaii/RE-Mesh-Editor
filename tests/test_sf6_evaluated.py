@@ -473,6 +473,26 @@ with evaluated.evaluated_hybrid_collection(collection) as (snapshot, chosen, rep
 assert data_counts() == counts
 passed('exact_legacy_c_hip_quad_remains_recognizable')
 
+# Automatic normalization can classify a deleted/cloned part as ordinary even
+# when its geometry is a legacy hip quad. Both writers must see its triangles.
+obj['SF6AutomaticOrdinaryPart'] = True
+counts = data_counts()
+before_vertices = coords(obj.data.vertices).tobytes()
+with evaluated.evaluated_hybrid_collection(collection) as (snapshot, chosen, report):
+    copied = next(item for item in snapshot.all_objects if item.type == 'MESH')
+    assert len(copied.data.vertices) == 4
+    assert len(copied.data.polygons) == 2
+    assert all(len(face.vertices) == 3 for face in copied.data.polygons)
+    assert not report['parts'][0]['retained_hip_stub']
+    assert all(len(v.groups) == 1 and v.groups[0].weight == 1 for v in copied.data.vertices)
+assert data_counts() == counts
+assert coords(obj.data.vertices).tobytes() == before_vertices
+assert bpy.context.selected_objects == [obj]
+assert bpy.context.view_layer.objects.active == obj
+assert evaluated._is_hip_stub(obj)
+passed('automatic_ordinary_hip_stub_triangulates_without_mutating_source')
+
+
 
 collection, obj = fixture('OrphanCleanup')
 user_orphan = bpy.data.meshes.new('Existing User Orphan')

@@ -13,7 +13,9 @@ import bpy
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--source-dir',type=Path,required=True)
+    source_group = parser.add_mutually_exclusive_group(required=True)
+    source_group.add_argument('--source-dir',type=Path)
+    source_group.add_argument('--source-file',type=Path)
     parser.add_argument('--report-json',type=Path)
     args = parser.parse_args(sys.argv[sys.argv.index('--')+1:])
     repo = Path(__file__).resolve().parents[1]
@@ -28,12 +30,17 @@ def main():
         return module
     source_tests = test_module('test_sf6_source_preservation')
     table_tests = test_module('test_sf6_source_subset')
-    original = args.source_dir/'esf030_001_01.mesh.230110883'
+    original = args.source_file or args.source_dir/'esf030_001_01.mesh.230110883'
     src = sf.SourceMesh(original.read_bytes())
     io.importREMeshFile(str(original),source_tests.IMPORT_OPTIONS.copy())
     collection = bpy.data.collections[bpy.context.scene['REMeshLastImportedCollection']]
     objects = [o for o in collection.all_objects if o.type == 'MESH']
     included = {p['start'] for p in src.parts if p['lod']==0 and not(p['group']==95 and p['sub'] in (0,1))}
+    if args.source_file:
+        # Fixture-neutral coverage: remove one real part, keeping a shaped part.
+        excluded = max(included)
+        included.remove(excluded)
+        assert included
     for obj in list(bpy.context.selected_objects):
         obj.select_set(False)
     for obj in objects:
@@ -56,7 +63,8 @@ def main():
         details=table_tests.validate(src,output.read_bytes(),included)
         passed('existing_selected_only_operator_preserves_filtered_source',**details)
         expected=output.read_bytes()
-        body=next(o for o in objects if json.loads(o[sf.META])['start']==0)
+        body=next(o for o in objects if json.loads(o[sf.META])['start'] in included
+                  and o.data.shape_keys and len(o.data.shape_keys.key_blocks) > 1)
         alternate=body.copy()
         alternate.data=body.data.copy()
         for key in list(alternate.keys()):
@@ -94,7 +102,7 @@ def main():
         io.importREMeshFile(str(output),source_tests.IMPORT_OPTIONS.copy())
         collection=bpy.data.collections[bpy.context.scene['REMeshLastImportedCollection']]
         meshes=[o for o in collection.all_objects if o.type=='MESH']
-        assert len(meshes)==13
+        assert len(meshes)==len(included)
         for obj in meshes:
             referenced={v for face in obj.data.polygons for v in face.vertices}
             assert referenced==set(range(len(obj.data.vertices))), obj.name

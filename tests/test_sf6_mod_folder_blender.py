@@ -51,7 +51,9 @@ def main():
                             folder_name=folder, mod_name=f'Display C{costume}', mod_version='v2',
                             mod_author='Test Author', mod_category=asset.category,
                             mod_description='Folder export integration', preview_path=str(preview),
-                            exportBlendShapes=True, rotate90=True)
+                            exportBlendShapes=True, selectedOnly=False, rotate90=True)
+            # A scripted call that states a preservation choice must also state its
+            # selection scope; the dialog always supplies both.
             result = bpy.ops.re_mesh.export_sf6_mod_folder('EXEC_DEFAULT', **settings)
             assert result == {'FINISHED'}
             output = root / folder / asset.relative_path
@@ -75,6 +77,7 @@ def main():
             properties.update(targetCollection=collection.name, rotate90=True)
             next_export = SimpleNamespace(**properties)
             context = SimpleNamespace(scene=bpy.context.scene, active_object=None,
+                                      preferences=bpy.context.preferences,
                                       window_manager=SimpleNamespace(invoke_props_dialog=lambda *a, **k: {'RUNNING_MODAL'}))
             assert ui.ExportSF6ModFolder.invoke(next_export, context, None) == {'RUNNING_MODAL'}
             assert next_export.mod_author == 'Test Author'
@@ -144,47 +147,40 @@ def main():
             assert collection.get('BatchExport_path') == last_success['batch_path']
             assert bpy.context.scene.re_mdf_toolpanel.modDirectory == last_success['mod_directory']
 
+        dialogs = importlib.import_module(repo.name + '.modules.mesh.sf6_unified_dialogs')
+
+        def pending(values):
+            """Run an export that must stop at its review and return that review."""
+            assert bpy.ops.re_mesh.export_sf6_mod_folder('EXEC_DEFAULT', **values) == {'INTERFACE'}
+            result = json.loads(bpy.context.scene[ui.SCENE_UNIFIED_RESULT])
+            assert result['status'] == 'pending_review', result
+            return dialogs._REQUESTS[result['request_id']]
+
+        def remembered():
+            saved = package.load_defaults(ui.settings_path())
+            return saved['mod_version'], json.loads(bpy.context.scene['SF6ModFolderDefaults'])['mod_version']
+
+        # Nothing selected: the review is blocked with the reason, cannot be
+        # approved, and neither the earlier variant nor the saved fields change.
+        remembered_before = remembered()
         selected_object.select_set(False)
-        try:
-            bpy.ops.re_mesh.export_sf6_mod_folder(
-                'EXEC_DEFAULT', **dict(selected_settings, mod_version='rejected'))
-        except RuntimeError as error:
-            assert 'No selected source mesh' in str(error)
-        else:
-            raise AssertionError('Empty selected folder export was accepted')
+        request = pending(dict(selected_settings, mod_version='rejected'))
+        assert request.state == 'blocked', request.state
+        assert 'No selected source mesh' in request.review['error_detail'], request.review
+        assert not request.approve(request.revision)
+        request.cancel()
         assert selected_output.read_bytes() == selected_mesh_before
         assert selected_info.read_bytes() == selected_info_before
         assert_last_success_unchanged()
-        assert package.load_defaults(ui.settings_path())['mod_version'] == 'rejected'
-        assert package.load_defaults(ui.settings_path())['selectedOnly'] is True
-        assert json.loads(bpy.context.scene['SF6ModFolderDefaults'])['mod_version'] == 'rejected'
-        report.append(dict(test='empty_selected_folder_export_keeps_destination_and_remembers_fields', passed=True))
+        assert remembered() == remembered_before
+        report.append(dict(test='empty_selected_folder_export_is_blocked_and_changes_nothing', passed=True))
 
-        # This guard rejects before the package exporter runs. It must still
-        # remember all typed fields, including an incompatible option pair.
-        guard_settings = dict(selected_settings, mod_version='guard rejected',
-                              mod_author='Guard Attempt', selectedOnly=False,
-                              exportBlendShapes=False, sf6HybridPreserve=True)
-        try:
-            bpy.ops.re_mesh.export_sf6_mod_folder('EXEC_DEFAULT', **guard_settings)
-        except RuntimeError as error:
-            assert 'requires Preserve Source Data' in str(error)
-        else:
-            raise AssertionError('Invalid hybrid option combination was accepted')
-        assert selected_output.read_bytes() == selected_mesh_before
-        assert selected_info.read_bytes() == selected_info_before
-        assert_last_success_unchanged()
-        guard_defaults = package.load_defaults(ui.settings_path())
-        for key in ('mod_version', 'mod_author', 'selectedOnly', 'exportBlendShapes', 'sf6HybridPreserve'):
-            assert guard_defaults[key] == guard_settings[key], key
-        assert json.loads(bpy.context.scene['SF6ModFolderDefaults'])['mod_author'] == 'Guard Attempt'
-        report.append(dict(test='early_validation_failure_remembers_fields', passed=True))
-
-        # A mesh-export failure remembers the attempted metadata and mesh
-        # options while leaving the previously exported files untouched.
+        # An edit that would drop source correctives stops at a review that names
+        # the loss. Until it is approved, the exported mod and settings stay as they were.
         before_mesh = output.read_bytes()
         before_info = (root / folder / 'modinfo.ini').read_bytes()
         shaped = next(o for o in collection.all_objects if o.type == 'MESH' and o.data.shape_keys)
+        logical_shaped_name = shaped.name
         keys = shaped.data.shape_keys.key_blocks
         old_name = keys[1].name
         keys[1].name = 'Unsupported renamed shape'
@@ -192,28 +188,32 @@ def main():
                                mod_description='Failed mesh attempt',
                                extra_categories='Mesh Failure', selectedOnly=False,
                                exportBlendShapes=True, sf6HybridPreserve=False)
-        try:
-            bpy.ops.re_mesh.export_sf6_mod_folder('EXEC_DEFAULT', **failed_settings)
-        except RuntimeError as error:
-            assert 'Shape keys' in str(error)
-        else:
-            raise AssertionError('Invalid export was accepted')
+        request = pending(failed_settings)
+        assert request.state == 'ready' and request.review['requires_loss_approval'] is True, request.review
+        assert any(loss.get('object') == logical_shaped_name for loss in request.review['losses']), request.review['losses']
+        assert request.cancel()
         keys[1].name = old_name
         assert output.read_bytes() == before_mesh
         assert (root / folder / 'modinfo.ini').read_bytes() == before_info
         assert_last_success_unchanged()
-        failed_defaults = package.load_defaults(ui.settings_path())
-        for key in ('mod_version', 'mod_author', 'mod_description', 'extra_categories',
-                    'selectedOnly', 'exportBlendShapes', 'sf6HybridPreserve'):
-            assert failed_defaults[key] == failed_settings[key], key
-        assert json.loads(bpy.context.scene['SF6ModFolderDefaults'])['mod_description'] == 'Failed mesh attempt'
-        assert ui.ExportSF6ModFolder.invoke(next_export, context, None) == {'RUNNING_MODAL'}
-        assert next_export.mod_version == 'bad'
-        assert next_export.mod_author == 'Mesh Failure Author'
-        assert next_export.mod_description == 'Failed mesh attempt'
-        assert next_export.extra_categories == 'Mesh Failure'
-        report.append(dict(test='failed_mesh_export_keeps_mod_and_remembers_fields', passed=True))
+        assert remembered() == remembered_before
+        report.append(dict(test='shape_loss_needs_approval_and_cancel_keeps_mod_and_settings', passed=True))
 
+        # The old Hybrid flag is retired. With Preserve Source off it is an
+        # ordinary export, saved as the next default like any successful export.
+        guard_settings = dict(selected_settings, folder_name='Ordinary Variant', mod_name='Ordinary Variant',
+                              mod_version='ordinary', mod_author='Ordinary Author', selectedOnly=False,
+                              exportBlendShapes=False, sf6HybridPreserve=True)
+        assert bpy.ops.re_mesh.export_sf6_mod_folder('EXEC_DEFAULT', **guard_settings) == {'FINISHED'}
+        ordinary_output = (root / 'Ordinary Variant' / asset.relative_path).read_bytes()
+        assert ordinary_output[:4] == b'MESH' and ordinary_output != original.read_bytes()
+        assert selected_output.read_bytes() == selected_mesh_before
+        guard_defaults = package.load_defaults(ui.settings_path())
+        for key in ('mod_version', 'mod_author', 'selectedOnly', 'exportBlendShapes'):
+            assert guard_defaults[key] == guard_settings[key], key
+        assert ui.ExportSF6ModFolder.invoke(next_export, context, None) == {'RUNNING_MODAL'}
+        assert next_export.mod_version == 'ordinary' and next_export.mod_author == 'Ordinary Author'
+        report.append(dict(test='retired_hybrid_flag_exports_ordinary_and_is_remembered', passed=True))
         # Direct export retains the previous behavior and produces no mod metadata.
         direct = root / filename
         mesh_io.exportREMeshFile(str(direct), dict(targetCollection=collection.name,

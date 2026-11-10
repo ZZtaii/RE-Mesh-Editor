@@ -16,6 +16,7 @@ from pathlib import Path
 import struct
 
 import bmesh
+from .sf6_mode_snapshot import alias_copy, logical_name, private_object_context
 import bpy
 import numpy as np
 
@@ -277,19 +278,23 @@ def _legacy_sharp_snapshots(samples):
     for obj, _, _ in samples:
         obj.select_set(True)
     try:
-        for obj in tuple(bpy.context.selected_objects):
-            bpy.context.view_layer.objects.active = obj
-            _set_private_mode('EDIT')
-            bm = bmesh.from_edit_mesh(bpy.context.edit_object.data)
-            sharp = [edge for edge in bm.edges if not edge.smooth]
-            if sharp:
-                bmesh.ops.split_edges(bm, edges=sharp)
-            bmesh.update_edit_mesh(bpy.context.edit_object.data)
-            _set_private_mode('OBJECT')
+        # A mode snapshot pins the context's selection and edit object, so
+        # address each private copy directly instead of reading them back.
+        for obj, _, _ in samples:
+            with private_object_context(obj):
+                bpy.context.view_layer.objects.active = obj
+                _set_private_mode('EDIT')
+                bm = bmesh.from_edit_mesh(obj.data)
+                sharp = [edge for edge in bm.edges if not edge.smooth]
+                if sharp:
+                    bmesh.ops.split_edges(bm, edges=sharp)
+                bmesh.update_edit_mesh(obj.data)
+                _set_private_mode('OBJECT')
     finally:
         active = bpy.context.view_layer.objects.active
         if active in private_objects and active.mode != 'OBJECT':
-            _set_private_mode('OBJECT')
+            with private_object_context(active):
+                _set_private_mode('OBJECT')
     remapped_samples = []
     for obj, report, payload, row_name, original_coords, normals, corner_name in markers:
         mesh = obj.data
@@ -498,6 +503,17 @@ def _active_modifier_report(original):
 def _sample_object(original, capture_collection, snapshot_collection,
                    owned_objects, owned_meshes, owned_armatures, rest_armatures,
                    preserve_sharp_edges):
+    if original.get('SF6OrdinaryEvaluatedSnapshot'):
+        snapshot=original.copy();snapshot.data=original.data.copy();snapshot.data.use_fake_user=False
+        owned_objects.append(snapshot);owned_meshes.append(snapshot.data);snapshot_collection.objects.link(snapshot)
+        report={'source_name':logical_name(original),'snapshot_name':snapshot.name,
+            'source_vertices':len(original.data.vertices),'evaluated_vertices':len(snapshot.data.vertices),
+            'evaluated_triangles':len(snapshot.data.polygons),'shape_keys':0,'active_modifiers':[],
+            'source_provenance_preserved':False,'source_transform_preserved':True,
+            'evaluated_shape_vertices':0,'retained_hip_stub':False,'corner_split_vertices':0,
+            'normal_split_vertices':0,'sharp_split_vertices':0,'ordinary_evaluated_snapshot':True}
+        alias_copy(snapshot,original)
+        return snapshot,report,(None,[])
     original_keys = original.data.shape_keys
     if not original.get('SF6AutomaticOrdinaryPart') and original.get('SF6HybridDonorSlotV1') is None and original_keys is not None and len(original_keys.key_blocks) > 1:
         keys = original_keys.key_blocks
@@ -580,7 +596,11 @@ def _sample_object(original, capture_collection, snapshot_collection,
             if shaped is not None:
                 owned_meshes.remove(shaped)
                 bpy.data.meshes.remove(shaped)
-    retained_hip_stub = not active_modifiers and not transformed and _is_hip_stub(original)
+    # Only source-backed stubs need the exact quad for legacy recognition.
+    # Automatically rebuilt ordinary parts must share triangulated topology
+    # with the ordinary writer, including four-vertex hip placeholders.
+    retained_hip_stub = (not original.get('SF6AutomaticOrdinaryPart') and
+                         not active_modifiers and not transformed and _is_hip_stub(original))
     # The legacy placeholder detector deliberately requires its exact quad.
     # Ordinary export's existing 4-vertex/2-triangle exception handles that one
     # shape. Other geometry is triangulated here before both writers read it.
@@ -628,7 +648,7 @@ def _sample_object(original, capture_collection, snapshot_collection,
         _attach_sampled_keys(snapshot, payload)
     basis.update()
     report = {
-        'source_name': original.name, 'snapshot_name': snapshot.name,
+        'source_name': logical_name(original), 'snapshot_name': snapshot.name,
         'source_vertices': len(original.data.vertices),
         'evaluated_vertices': len(basis.vertices),
         'evaluated_triangles': len(basis.polygons),
@@ -642,6 +662,7 @@ def _sample_object(original, capture_collection, snapshot_collection,
         'normal_split_vertices': normal_split_vertices,
         'sharp_split_vertices': 0,
     }
+    alias_copy(snapshot,original)
     return snapshot, report, payload
 
 
@@ -698,6 +719,7 @@ def evaluated_hybrid_collection(source_collection, selected_objects=None, *, pre
             if original.get('SF6HybridDonorSlotV1') is not None:
                 slot = json.loads(original['SF6HybridDonorSlotV1'])
                 copied.name = f"Group_{slot['group']}_Sub_{slot['sub']}__{slot['material']}"
+                alias_copy(copied,copied)
                 for name in list(copied.keys()):
                     if name.startswith('SF6Source') or name == 'SF6HybridDonorSlotV1':
                         del copied[name]

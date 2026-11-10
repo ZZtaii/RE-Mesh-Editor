@@ -1,3 +1,9 @@
+## SF6 unified export, version 0.71
+
+See [SF6 Unified Export](SF6_UNIFIED_EXPORT.md) for the current single preservation workflow, scoped fallback review, LOD behavior and verification limits. Older strict-source and Hybrid script interfaces remain internal compatibility paths.
+
+The unified workflow supports export from mesh Edit, Sculpt, Weight/Vertex/Texture Paint, armature Pose and armature Edit modes. Finish an active brush stroke or modal operation before exporting. Older sections below describe legacy interfaces and earlier release validation; their Object Mode advice is not a unified-export restriction. Validation for this update uses Blender 4.3.2 on Linux; it does not establish Windows, Blender 5 or in-game compatibility.
+
 ![REMeshEditorTitle](https://github.com/NSACloud/RE-Mesh-Editor/assets/46909075/156d0b53-ff4f-43db-9a3d-9e0cbd71326e)
 
 # RE Mesh Editor — Street Fighter 6 fork
@@ -8,7 +14,7 @@ This fork of **[NSA Cloud's RE Mesh Editor](https://github.com/NSACloud/RE-Mesh-
 
 ### [Download the latest release](https://github.com/ZZtaii/RE-Mesh-Editor/releases/latest)
 
-Current stable release: **[V0.69](https://github.com/ZZtaii/RE-Mesh-Editor/releases/tag/v0.69)** · [What's new](#whats-new-in-v069) · [Choose an export mode](#choose-an-export-mode) · [Change log](#change-log)
+Current stable release: **[V0.71](https://github.com/ZZtaii/RE-Mesh-Editor/releases/tag/v0.71)** · [What's new in 0.71](#change-log) · [What was new in V0.69](#whats-new-in-v069) · [Choose an export mode](#choose-an-export-mode) · [Change log](#change-log)
 
 > **Recommended: Blender 4.5.3 LTS**, the version used for this fork's validation. Blender 5+ compatibility has not been established by these checks.
 
@@ -389,6 +395,17 @@ V0.69 is based on merged [PR 9](https://github.com/ZZtaii/RE-Mesh-Editor/pull/9)
 Three inherited issues remain: some Auto Solve exports leave orphan helper meshes; some large SF6 hybrid exports fail with a normal-table/index-padding error; and longer Windows mod-folder destinations can fail. Lower the mesh density or use a shorter folder path where applicable. Hybrid exports LOD0 only and requires compatible retained source information; RE9 source/shape preservation is unavailable.
 
 ## Change log
+
+### [V0.71: one SF6 export workflow, export from any mode, import any file name](https://github.com/ZZtaii/RE-Mesh-Editor/releases/tag/v0.71)
+
+- **One SF6 export workflow.** Direct, batch and mod-folder export share one pipeline. With Preserve Source Data on, an untouched mesh is written back exactly, and an edited mesh keeps its corrective shapes wherever they can be proven compatible. The separate Hybrid option is retired.
+- **Review before anything is written.** Anything an export would lose, such as dropped lower LODs or corrective shapes that cannot be kept, is listed in a review window first. Exports that lose nothing go straight through. A preference skips the window.
+- **Export from any mode.** Edit, Sculpt, Weight Paint, Vertex Paint, Texture Paint and armature Pose or Edit mode no longer need a switch to Object Mode.
+- **Import any valid mesh file.** The game version is read from the file itself when the name has no version, a wrong one, or an unknown one. This applies to every game.
+- **Fewer SF6 import refusals.** Merge Groups, Merge Armature and source data that cannot be read now import as an ordinary mesh with a warning.
+- **Upgrading from 0.69.** Saved batch and mod-folder settings carry over. Renaming a collection after import no longer counts as an edit.
+
+See [SF6 Unified Export](SF6_UNIFIED_EXPORT.md) for details and the [release notes](https://github.com/ZZtaii/RE-Mesh-Editor/releases/tag/v0.71) for behaviour changes and known limits.
 
 ### [V0.69 — Easier SF6 mixing and safer UV export](https://github.com/ZZtaii/RE-Mesh-Editor/releases/tag/v0.69)
 

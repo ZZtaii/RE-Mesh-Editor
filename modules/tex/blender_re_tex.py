@@ -136,7 +136,8 @@ def convertTexDDSList (fileNameList,inDir,outDir,gameName,createStreamingTex = F
 		os.makedirs(outDir,exist_ok = True)
 		for texPath in texConversionList:
 			try:
-				texInfo = convertTexFileToDDS(texPath,texPath.split(".tex.")[0]+".dds")
+				ddsName = os.path.basename(texPath).rsplit(".", 2)[0] + ".dds"
+				texInfo = convertTexFileToDDS(texPath,os.path.join(outDir,ddsName))
 				if texToPNG:
 					ddsToPNGConversionList.extend(texInfo["outDDSList"])
 				conversionCount += 1

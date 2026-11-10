@@ -22,6 +22,7 @@ IMPORT_MPLY = True
 
 from ..gen_functions import splitNativesPath,getPaddedPos,getBit,setBit,getPaddingAmount,textColors,raiseWarning,raiseError,read_uint,read_int,read_int64,read_uint64,read_float,read_short,read_ushort,read_ubyte,read_unicode_string,read_byte,write_uint,write_int,write_int64,write_uint64,write_float,write_short,write_ushort,write_ubyte,write_unicode_string,write_byte,read_string,write_string
 import os
+import re
 import stat
 import tempfile
 import numpy as np
@@ -193,6 +194,58 @@ def getNearestRemapVersion(meshVersion):#Returns the remapped version number of 
 		return VERSION_DD2_TU3_2
 	knownVersions = (version for version in meshFileVersionToNewVersionDict if version != 260421070)
 	return meshFileVersionToNewVersionDict[min(knownVersions, key=lambda x:abs(x-meshVersion))]
+
+#Internal versions the table above cannot hold because their file version already has an entry
+extraInternalVersionToMeshFileVersionDict = {
+	230403828:230110883,#Second SF6 internal version, also accepted by sf6_source.SourceMesh
+	}
+_meshNameVersionPattern = re.compile(r"\.mesh\.(\d+)", re.IGNORECASE)
+_meshNameMarkerPattern = re.compile(r"\.mesh(\.|$)", re.IGNORECASE)
+
+def getMeshFileBaseName(filepath):
+	"""File name up to the .mesh marker in any letter case; the whole stem if there is no marker."""
+	name = os.path.split(filepath)[1]
+	match = _meshNameMarkerPattern.search(name)
+	return name[:match.start()] if match else os.path.splitext(name)[0]
+
+def detectMeshFileVersion(filepath):
+	"""Mesh file version of a path, checked against the file's own header.
+
+	The numeric suffix normally carries the version. A renamed file, a wrong suffix, or no
+	suffix at all still leaves a valid mesh file, so the header decides whenever the name
+	gives no version, an unknown one, or one the header contradicts. Returns None when
+	neither the name nor the header identifies a version.
+	"""
+	name = os.path.split(filepath)[1]
+	matches = _meshNameVersionPattern.findall(name)
+	if matches:
+		nameVersion = int(matches[-1])
+	else:
+		try:
+			nameVersion = int(os.path.splitext(name)[1].replace(".",""))
+		except ValueError:
+			nameVersion = None
+	internalVersion = None
+	try:
+		with open(filepath,"rb") as file:
+			header = file.read(8)
+		if len(header) == 8 and header[:4] == b"MESH":
+			internalVersion = struct.unpack_from("<I",header,4)[0]
+	except OSError:
+		pass
+	if internalVersion is None:
+		return nameVersion
+	if nameVersion in meshFileVersionToNewVersionDict:
+		expectedInternalVersion = meshFileVersionToInternalVersionDict.get(nameVersion)
+		if expectedInternalVersion is None or expectedInternalVersion == internalVersion:
+			return nameVersion
+	headerVersion = internalVersionToMeshFileVersionDict.get(
+		internalVersion,extraInternalVersionToMeshFileVersionDict.get(internalVersion))
+	if headerVersion is None:
+		return nameVersion
+	if nameVersion is not None and nameVersion != headerVersion:
+		raiseWarning(f"{name}: the file name says mesh version {nameVersion}, but the file contents are version {headerVersion} ({meshFileVersionToGameNameDict.get(headerVersion,'unknown game')}). Importing by contents.")
+	return headerVersion
 
 c_uint64 = ctypes.c_uint64
 class CompressedSixWeightIndices_bits(ctypes.LittleEndianStructure):
@@ -2657,10 +2710,9 @@ def readREMesh(filepath,lodTarget = None):
 		file = open(filepath,"rb",buffering=8192)
 	except:
 		raiseError("Failed to open " + filepath)
-	try:
-		meshVersion = int(os.path.splitext(filepath)[1].replace(".",""))
-	except:
-		print("Unable to read mesh version from file path, assuming MHRSB")
+	meshVersion = detectMeshFileVersion(filepath)
+	if meshVersion is None:
+		print("Unable to read mesh version from the file name or header, assuming MHRSB")
 		meshVersion = 2109148288#MHRSB
 	version = meshFileVersionToNewVersionDict.get(meshVersion,getNearestRemapVersion(meshVersion))
 	if meshVersion not in meshFileVersionToNewVersionDict:
