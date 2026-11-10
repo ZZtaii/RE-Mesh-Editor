@@ -83,10 +83,17 @@ def apply_batch_new_profile_defaults(item, collection, *, enable_unified=False):
     if not hasattr(item, 'bl_rna'):
         explicit = [key for key in tuple(NEW_PROFILE_DEFAULTS) + ('exportBlendShapes',)
                     if hasattr(item, key)]
+    # A profile saved before the unified workflow carries no workflow marker.
+    # Back then a preserved export copied the source and ignored the processing
+    # toggles, so their stored values were never choices about it. Reading them
+    # as rebuild requests would make an untouched mesh lose its lower LODs. The
+    # first unified export stores the marker, so this applies once per collection.
+    legacy_preserve = (has_saved_profile and BATCH_WORKFLOW not in source and
+                       bool(getattr(item, 'exportBlendShapes', False)))
     values = {key: getattr(item, key, default) for key, default in NEW_PROFILE_DEFAULTS.items()}
-    if 'exportBlendShapes' in explicit:
+    if 'exportBlendShapes' in explicit or legacy_preserve:
         values['exportBlendShapes'] = item.exportBlendShapes
-    resolved = apply_new_profile_defaults(values, has_saved_profile=has_saved_profile,
+    resolved = apply_new_profile_defaults(values, has_saved_profile=has_saved_profile and not legacy_preserve,
                                           explicit=explicit, enable_unified=True)
     applied = list(resolved.get('_sf6NewProfileDefaults', ()))
     if not has_saved_profile and 'exportBlendShapes' not in explicit:

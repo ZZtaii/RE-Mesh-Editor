@@ -67,6 +67,13 @@ def apply_folder_processing(operator, context, profile, options, *, enable_unifi
     has_saved = getattr(operator, '_sf6FolderHasSavedProfile', None)
     if has_saved is None:
         has_saved = _has_saved_profile(context, profile)
+    # Settings saved before the unified workflow hold no workflow marker and no
+    # processing choices: a preserved export copied the source then, whatever the
+    # preferences said. Treat such a profile as new here, or the preference
+    # defaults read as rebuild requests and an untouched mesh loses its lower LODs.
+    if has_saved and not any(key in profile for key in
+                             package.UNIFIED_DEFAULT_FIELDS + package.PROCESSING_DEFAULT_FIELDS):
+        has_saved = False
     return apply_new_profile_defaults(runtime, has_saved_profile=has_saved,
         explicit=explicit, enable_unified=enable_unified)
 
