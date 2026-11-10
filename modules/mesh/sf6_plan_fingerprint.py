@@ -17,11 +17,24 @@ def _is_runtime_pbvh_attribute(attribute):
             expected.get(attribute.name) == attribute.domain)
 
 
-def fingerprint(collection,selected_objects,options=None,stable_ids=False):
+def _is_editor_state_attribute(attribute):
+    # Entering and leaving Edit Mode without editing rewrites the selection
+    # layers and drops sharp flags that are false everywhere. Neither changes
+    # the exported mesh; face smoothing is still bound through use_smooth.
+    if attribute.name.startswith('.select_'):
+        return True
+    if attribute.name in ('sharp_edge', 'sharp_face') and attribute.data_type == 'BOOLEAN':
+        values = np.empty(len(attribute.data), np.bool_)
+        attribute.data.foreach_get('value', values)
+        return not values.any()
+    return False
+
+
+def fingerprint(collection,selected_objects,options=None,stable_ids=False,canonical_attributes=False):
     if needs_snapshot(collection):
         with export_snapshot(collection) as (target, snapshot):
             selected = None if selected_objects is None else tuple(snapshot.mapping[o] for o in selected_objects if o in snapshot.mapping)
-            return fingerprint(target, selected, options, stable_ids)
+            return fingerprint(target, selected, options, stable_ids, canonical_attributes)
     # Update evaluated transforms without committing live Edit Mode data.
     bpy.context.view_layer.update()
     digest=hashlib.sha256();pending=[];seen=set()
@@ -82,7 +95,13 @@ def fingerprint(collection,selected_objects,options=None,stable_ids=False):
             continue
         put((logical_name(o),identity(o),pointer(o.data),[list(row) for row in o.matrix_world],pointer(o.parent),o.hide_viewport,o.hide_render))
         put([(m.name,m.type,rna(m),custom(m)) for m in o.modifiers]);put([(c.name,c.type,rna(c)) for c in o.constraints])
-        if o.type=='ARMATURE':
+        if o.type=='ARMATURE' and canonical_attributes:
+            # Leaving armature Edit Mode rounds rest matrices. The rest rig is
+            # compared separately with a tolerance, so bind structure and the
+            # authored pose channels here instead of exact derived matrices.
+            put([(b.name,b.parent.name if b.parent else None,b.use_deform,custom(b)) for b in o.data.bones])
+            put([(b.name,[list(row) for row in b.matrix_basis],[(c.name,c.type,rna(c)) for c in b.constraints]) for b in o.pose.bones])
+        elif o.type=='ARMATURE':
             put([(b.name,b.parent.name if b.parent else None,[list(row) for row in b.matrix_local],b.use_deform,custom(b)) for b in o.data.bones])
             put([(b.name,[list(row) for row in b.matrix],[(c.name,c.type,rna(c)) for c in b.constraints]) for b in o.pose.bones])
         if o.type in ('CURVE','SURFACE','FONT') and not stable_ids:
@@ -130,8 +149,11 @@ def fingerprint(collection,selected_objects,options=None,stable_ids=False):
         put(('active_channels',mesh.uv_layers.active_index,[u.active_render for u in mesh.uv_layers],getattr(mesh.color_attributes,'active_color_name','')))
         for layer in mesh.uv_layers:put(layer.name);floats(layer.data,'uv',2)
         for layer in mesh.color_attributes:put((layer.name,layer.domain,layer.data_type));floats(layer.data,'color',4)
-        for attr in mesh.attributes:
+        # Canonical form: attribute order also changes across an Edit Mode visit.
+        attributes = sorted(mesh.attributes, key=lambda a: a.name) if canonical_attributes else mesh.attributes
+        for attr in attributes:
             if _is_runtime_pbvh_attribute(attr):continue
+            if canonical_attributes and _is_editor_state_attribute(attr):continue
             put((attr.name,attr.domain,attr.data_type,len(attr.data)))
             if not len(attr.data):continue
             sample=attr.data[0]

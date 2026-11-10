@@ -8,7 +8,10 @@ from .sf6_mode_snapshot import logical_name, logical_pointer, needs_snapshot, ex
 
 BASELINE='SF6UnifiedImportStateV1'
 WORKFLOW='unified_v1'
-RIG_ROUNDOFF_TOLERANCE=4e-6
+# Entering and leaving armature Edit Mode without editing rounds rest matrices
+# by up to 1.7e-5 on retail SF6 rigs (measured on 12 meshes, Blender 4.5, with
+# no growth over repeated visits). Anything inside 0.1 mm is not an edit.
+RIG_ROUNDOFF_TOLERANCE=1e-4
 
 class UnifiedSettingsConflict(ValueError):
     def __init__(self,plan):
@@ -17,8 +20,10 @@ class UnifiedSettingsConflict(ValueError):
         super().__init__('UNIFIED_SETTINGS_CONFLICT')
 
 
-def authoring_state(collection):
-    return fingerprint(collection,None,{},stable_ids=True)
+def authoring_state(collection,legacy=False):
+    # 'state' baselines saved by earlier builds hash raw attribute layout, so a
+    # no-edit Edit Mode visit read as an edit. 'state_v2' ignores that noise.
+    return fingerprint(collection,None,{},stable_ids=True,canonical_attributes=not legacy)
 
 def rig_state(collection):
     arms=[o for o in collection.objects if o.type=='ARMATURE']
@@ -59,7 +64,7 @@ def cached_rig_state(collection):
 
 def capture_import_baseline(collection):
     collection[BASELINE]=json.dumps({'schema':1,'source_sha256':collection.get('SF6SourceSHA256'),
-        'state':authoring_state(collection),'rig':rig_state(collection),'cached_rig':cached_rig_state(collection)},sort_keys=True)
+        'state_v2':authoring_state(collection),'rig':rig_state(collection),'cached_rig':cached_rig_state(collection)},sort_keys=True)
 
 def _source(collection):
     if collection is None:return None,'missing_collection'
@@ -179,10 +184,11 @@ def plan_export(path,options):
     try:baseline=json.loads(collection.get(BASELINE,''))
     except (ValueError,TypeError):baseline={}
     if not isinstance(baseline,dict):baseline={}
-    state=authoring_state(collection)
+    state_key='state_v2' if 'state_v2' in baseline else 'state'
+    state=authoring_state(collection,legacy=state_key=='state')
     if status!='verified':reasons.append(status)
     if baseline.get('schema')!=1 or baseline.get('source_sha256')!=collection.get('SF6SourceSHA256'):reasons.append('no_verified_import_snapshot')
-    elif baseline.get('state')!=state:reasons.append('authoring_changed')
+    elif baseline.get(state_key)!=state:reasons.append('authoring_changed')
     if options.get('selectedOnly'):reasons.append('selected_scope_requires_rebuild')
     if lod_policy=='lod0' and (source is None or source.lod_count!=1):reasons.append('requested_lod0')
     if bool(options.get('rotate90',True))!=bool(collection.get('SF6SourceRotate',True)):reasons.append('axis_conversion_changed')
