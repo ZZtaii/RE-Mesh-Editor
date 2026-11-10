@@ -1098,12 +1098,22 @@ def importREMeshFile(filePath,options):
 		attach_source(filePath, meshCollection, meshOffsetDict, options['rotate90'], source=sf6Source)
 	meshOffsetDict.clear()
 	progress_stage("Loading materials and optional resources", 90)
+	# The material and fur lookups split the path on ".mesh" and read the version
+	# after it. Give an oddly named file the name it would normally have, so the
+	# lookup works on it and can never stop an import that already succeeded.
+	resourcePath = filePath
+	if meshVersion is not None and not os.path.basename(filePath).endswith(f".mesh.{meshVersion}"):
+		resourcePath = os.path.join(os.path.dirname(filePath), f"{fileName}.mesh.{meshVersion}")
 	if options["loadMaterials"] or options["loadMDFData"]:
 		#print(filePath.split(".mesh")[1])
 		if options["mdfPath"] != "":
 			mdfPath = options["mdfPath"]
 		else:
-			mdfPath = findMDFPathFromMeshPath(filePath,gameName)
+			try:
+				mdfPath = findMDFPathFromMeshPath(resourcePath,gameName)
+			except Exception as err:
+				mdfPath = None
+				warningList.append("Could not look for an MDF file next to " + os.path.basename(filePath) + ": " + str(err))
 			#print(mdfPath)
 		try:
 			if mdfPath != None:
@@ -1136,7 +1146,11 @@ def importREMeshFile(filePath,options):
 			warningList.append("Could not import mesh materials from " + mdfPath +":" + str(err))
 	
 	if options["loadShellFur"]:
-		sFurPath = findSFurPathFromMeshPath(filePath,gameName)
+		try:
+			sFurPath = findSFurPathFromMeshPath(resourcePath,gameName)
+		except Exception as err:
+			sFurPath = None
+			warningList.append("Could not look for a shell fur file next to " + os.path.basename(filePath) + ": " + str(err))
 		if sFurPath != None:
 			print("Loading SFur Data...")
 			try:

@@ -63,6 +63,13 @@ def main():
         attempt('extra suffix after the version', copy(stem + '.mesh.230110883.bak'), True)
         attempt('another game version in the name', copy(stem + '.mesh.221108797'), True)
         attempt('no mesh marker in the name', copy(stem + '.bin'), True)
+        # Material and shell fur lookups read the version from the name too. They
+        # are on by default in the import dialog and must not stop an odd name.
+        resources = dict(loadMaterials=True, loadMDFData=True, loadShellFur=True)
+        attempt('retail name with materials on', copy(stem + '.mesh.230110883'), True, **resources)
+        attempt('uppercase extension with materials on', copy(stem.upper() + '.MESH.230110883'), True, **resources)
+        attempt('no mesh marker with materials on', copy(stem + '.bin'), True, **resources)
+        attempt('no version suffix with materials on', copy(stem + '.mesh'), True, **resources)
         attempt('trailing bytes after the mesh', copy('padded.mesh.230110883', raw + b'\0' * 16), False)
         attempt('merge groups on', copy('merged.mesh.230110883'), False, mergeGroups=True)
         attempt('blend shapes off', copy('plain.mesh.230110883'), False, importBlendShapes=False)

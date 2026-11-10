@@ -87,8 +87,14 @@ def apply_batch_new_profile_defaults(item, collection, *, enable_unified=False):
     # Back then a preserved export copied the source and ignored the processing
     # toggles, so their stored values were never choices about it. Reading them
     # as rebuild requests would make an untouched mesh lose its lower LODs. The
-    # first unified export stores the marker, so this applies once per collection.
+    # A Preserve-off export in this version also leaves no marker, so the marker
+    # alone cannot identify an old profile. This version always stores the keys
+    # below on a successful batch export and 0.69 never did; their absence does.
+    # After the first export here they exist, so this applies once per collection.
+    stored_by_this_version = any('BatchExport_' + key in source for key in
+                                 ('splitLoopVertices', 'autoSolveRepeatedUVs', 'normalizeWeights'))
     legacy_preserve = (has_saved_profile and BATCH_WORKFLOW not in source and
+                       not stored_by_this_version and
                        bool(getattr(item, 'exportBlendShapes', False)))
     values = {key: getattr(item, key, default) for key, default in NEW_PROFILE_DEFAULTS.items()}
     if 'exportBlendShapes' in explicit or legacy_preserve:
