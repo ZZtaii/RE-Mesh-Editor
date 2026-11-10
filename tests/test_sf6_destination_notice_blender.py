@@ -62,7 +62,8 @@ def main():
         context = SimpleNamespace(scene=bpy.context.scene, active_object=None,
             window_manager=SimpleNamespace(invoke_props_dialog=lambda *a, **k: {'RUNNING_MODAL'}))
         assert ui.ExportSF6ModFolder.invoke(operator, context, None) == {'RUNNING_MODAL'}
-        assert 'Ingrid C1' in operator.destination_notice and 'Yasmine C2' in operator.destination_notice
+        # The notice names what the folder already holds; the mesh being exported is the dialog's own subject.
+        assert 'Ingrid C1' in operator.destination_notice, operator.destination_notice
         for key, value in defaults.items():
             assert getattr(operator, key) == value, key
         passed('conflict_notice_preserves_remembered_fields')
@@ -70,7 +71,9 @@ def main():
         same = bpy.data.collections.new('esf032_001_01.mesh')
         operator.targetCollection = same.name
         ui.update_collection(operator, context)
-        assert operator.destination_notice == ''
+        # Replacing an earlier export of the same character and costume is still
+        # an update of existing content, so the notice stays.
+        assert 'Ingrid C1' in operator.destination_notice, operator.destination_notice
         operator.targetCollection = collection.name
         ui.update_collection(operator, context)
         assert 'Ingrid C1' in operator.destination_notice
@@ -94,7 +97,8 @@ def main():
         passed('menu_and_unreadable_folder_notice_handling')
 
         # The notice is informational: a real preserved export still succeeds.
-        settings = dict(defaults, targetCollection=collection.name, exportBlendShapes=True, rotate90=True)
+        settings = dict(defaults, targetCollection=collection.name, exportBlendShapes=True,
+                        selectedOnly=False, rotate90=True)
         assert bpy.ops.re_mesh.export_sf6_mod_folder('EXEC_DEFAULT', **settings) == {'FINISHED'}
         asset = ui.package.asset_from_collection(collection)
         assert (root/'Combined'/asset.relative_path).read_bytes() == original.read_bytes()

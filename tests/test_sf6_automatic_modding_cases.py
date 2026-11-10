@@ -23,6 +23,8 @@ PARTS = [dict(lod=0, group=i, sub=0, material=i, start=i*3, count=3, faces=1) fo
 class Source:
     parts = PARTS
     materials = ['body', 'cloth']
+    # The corrective is authored over every vertex of both parts (start, offset, count).
+    shapes = [[('corrective', [(p['start'], 0, p['count']) for p in PARTS])]]
     def part_shapes(self, part):
         return [('corrective', np.zeros((3,3)), [])]
 SOURCE = Source()
@@ -53,27 +55,50 @@ def fixture():
         objs.append(obj)
     return c,arm,objs
 
-def run(name, mutate, expected_retained=None, expected_ordinary=None, error=None, selection=None):
+DUPLICATE='Duplicate source claim; ordinary fallback loses its corrective links'
+AMBIGUOUS='Ambiguous or missing joined source row identities'
+MISSING='Missing compatible target shape keys'
+MASKED='Non-Basis-relative or masked target keys'
+MATERIAL='Material changed on source section'
+EXTRA='Additional shape keys have no verified source corrective identity'
+
+def run(name, mutate, expected_retained=None, expected_ordinary=None, error=None, selection=None, losses=()):
+    """Prepare one case. An edit that would drop source correctives never proceeds
+    on its own: each such section first asks for consent with an exact reason,
+    and only becomes Ordinary geometry once that loss token is granted.
+    'losses' lists the reasons asked for, in order; 'error' is a refusal that no
+    consent can lift."""
     c,arm,objs=fixture(); mutate(c,arm,objs)
     before=counts(); selected=None if selection is None else [objs[i] for i in selection]
-    try:
-        with auto.automatic_collection(c,SOURCE,HASH,selected) as (prepared,mapped,report):
-            if error: raise AssertionError('Expected refusal: '+error)
-            assert report['retained_source_parts']==expected_retained,report
-            assert len(report['ordinary_sections'])==expected_ordinary,report
-            assert len(mapped)==report['output_sections']
-    except HybridExportError as exc:
-        assert error and error in str(exc),(error,str(exc))
+    granted=[];asked=[]
+    while True:
+        try:
+            with auto.automatic_collection(c,SOURCE,HASH,selected,approved_corrective_losses=tuple(granted)) as (prepared,mapped,report):
+                if error: raise AssertionError('Expected refusal: '+error)
+                assert report['retained_source_parts']==expected_retained,report
+                assert len(report['ordinary_sections'])==expected_ordinary,report
+                assert len(mapped)==report['output_sections']
+            break
+        except auto.CorrectiveLossConsentRequired as exc:
+            assert counts()==before, ('Consent request leaked data',before,counts())
+            assert exc.loss_token not in granted, 'Granted loss was asked for again'
+            asked.append(exc.reason);granted.append(exc.loss_token)
+            assert len(asked)<=len(losses), (name,asked)
+        except HybridExportError as exc:
+            assert error and error in str(exc),(error,str(exc))
+            break
+    assert asked==list(losses), (name,asked)
     assert counts()==before, ('Temporary data leak',before,counts())
     RESULTS.append(dict(test=name,passed=True));print('PASS '+name,flush=True)
 
 run('unchanged_two_source_parts',lambda c,a,o:None,2,0)
 run('deleted_part_is_reported_not_resurrected',lambda c,a,o:bpy.data.objects.remove(o[1],do_unlink=True),1,0)
 run('selected_subset_excludes_other_parts',lambda c,a,o:None,1,0,selection=[0])
-run('empty_selection_refuses',lambda c,a,o:None,error='No compatible target-source parts',selection=[])
+# An empty selection prepares nothing here; the export operators reject it before any file is written.
+run('empty_selection_prepares_nothing',lambda c,a,o:None,0,0,selection=[])
 def duplicate(c,a,o):
     d=o[0].copy();d.data=o[0].data.copy();c.objects.link(d)
-run('duplicate_shaped_claims_refuse_without_losing_correctives',duplicate,error='Duplicated or split source corrective geometry')
+run('duplicate_shaped_claims_need_consent_for_each_claimant',duplicate,1,2,losses=[DUPLICATE,DUPLICATE])
 def join(c,a,o):
     bpy.ops.object.select_all(action='DESELECT')
     for obj in o:obj.select_set(True)
@@ -83,14 +108,14 @@ def joined_duplicate(c,a,o):
     d=o[0].copy();d.data=o[0].data.copy();c.objects.link(d)
     d.location.x=2
     join(c,a,[o[0],d])
-run('joined_moved_duplicate_refuses_without_losing_correctives',joined_duplicate,error='Duplicated or split source corrective geometry')
+run('joined_moved_duplicate_needs_consent',joined_duplicate,1,1,losses=[AMBIGUOUS])
 
-run('missing_corrective_is_ordinary',lambda c,a,o:o[0].shape_key_clear(),1,1)
-run('masked_corrective_is_ordinary',lambda c,a,o:setattr(o[0].data.shape_keys.key_blocks[1],'vertex_group','C_Hip'),1,1)
-run('absolute_correctives_are_ordinary',lambda c,a,o:setattr(o[0].data.shape_keys,'use_relative',False),1,1)
-run('duplicated_vertex_ids_refuse_without_losing_correctives',lambda c,a,o:setattr(o[0].data.attributes[sf6.VERTEX_ID].data[1],'value',0),error='Duplicated or split source corrective geometry')
-run('removed_provenance_is_ordinary',lambda c,a,o:o[0].data.attributes.remove(o[0].data.attributes[sf6.VERTEX_ID]),1,1)
-run('shaped_material_reassignment_refuses_without_losing_correctives',lambda c,a,o:o[0].data.materials.__setitem__(0,bpy.data.materials.new('replacement')),error='Material reassignment on source corrective geometry')
+run('missing_corrective_is_ordinary_after_consent',lambda c,a,o:o[0].shape_key_clear(),1,1,losses=[MISSING])
+run('masked_corrective_is_ordinary_after_consent',lambda c,a,o:setattr(o[0].data.shape_keys.key_blocks[1],'vertex_group','C_Hip'),1,1,losses=[MASKED])
+run('absolute_correctives_are_ordinary_after_consent',lambda c,a,o:setattr(o[0].data.shape_keys,'use_relative',False),1,1,losses=[MASKED])
+run('duplicated_vertex_ids_need_consent',lambda c,a,o:setattr(o[0].data.attributes[sf6.VERTEX_ID].data[1],'value',0),1,1,losses=[AMBIGUOUS])
+run('removed_provenance_is_ordinary_after_consent',lambda c,a,o:o[0].data.attributes.remove(o[0].data.attributes[sf6.VERTEX_ID]),1,1,losses=[AMBIGUOUS])
+run('shaped_material_reassignment_needs_consent',lambda c,a,o:o[0].data.materials.__setitem__(0,bpy.data.materials.new('replacement')),1,1,losses=[MATERIAL])
 def added(c,a,o):
     d=o[0].copy();d.data=o[0].data.copy();c.objects.link(d);d.shape_key_clear()
     for key in list(d.keys()):del d[key]
@@ -98,16 +123,16 @@ def added(c,a,o):
 run('new_rigged_geometry_is_ordinary',added,2,1)
 def unbound(c,a,o):
     o[0].shape_key_clear();o[0].modifiers.clear()
-run('unbound_replacement_refuses',unbound,error='Bind mixed geometry')
+run('unbound_replacement_is_ordinary_after_consent',unbound,1,1,losses=[MISSING])
 def unweighted(c,a,o):
     o[0].shape_key_clear();o[0].vertex_groups.clear()
-run('unweighted_replacement_refuses',unweighted,error='invalid or unweighted')
+run('unweighted_replacement_refuses_even_with_consent',unweighted,error='invalid or unweighted',losses=[MISSING])
 def joined_modifier(c,a,o):
     join(c,a,o);o[0].modifiers.new('Mirror','MIRROR')
 run('joined_live_modifier_refuses_before_geometry_changes',joined_modifier,error='Apply non-armature modifiers')
 
-run('extra_unmapped_key_keeps_only_source_correctives',lambda c,a,o:o[0].shape_key_add(name='CustomUnmappedKey'),2,0)
-run('entire_mesh_replaced_requires_ordinary_export',lambda c,a,o:[obj.shape_key_clear() for obj in o],error='No compatible target-source parts')
+run('extra_unmapped_key_needs_consent',lambda c,a,o:o[0].shape_key_add(name='CustomUnmappedKey'),1,1,losses=[EXTRA])
+run('entire_mesh_replaced_is_ordinary_after_consent',lambda c,a,o:[obj.shape_key_clear() for obj in o],0,2,losses=[MISSING,MISSING])
 def empty_mesh(c,a,o):
     o[0].shape_key_clear();o[0].data.clear_geometry()
 run('empty_mesh_refuses_actionably',empty_mesh,error='Mixed mesh has no faces')
@@ -116,11 +141,11 @@ run('missing_assigned_material_refuses',lambda c,a,o:o[0].data.materials.clear()
 def joined_material(c,a,o):
     o[1].data.materials[0]=bpy.data.materials.new('joined_replacement')
     join(c,a,o)
-run('joined_material_reassignment_refuses',joined_material,error='Material reassignment on source corrective geometry')
+run('joined_material_reassignment_needs_consent',joined_material,1,1,losses=[MATERIAL])
 def object_material(c,a,o):
     o[0].material_slots[0].link='OBJECT'
     o[0].material_slots[0].material=bpy.data.materials.new('object_replacement')
-run('object_linked_material_reassignment_refuses',object_material,error='Material reassignment on source corrective geometry')
+run('object_linked_material_reassignment_needs_consent',object_material,1,1,losses=[MATERIAL])
 run('unused_material_slot_does_not_change_identity',lambda c,a,o:o[0].data.materials.append(bpy.data.materials.new('unused')),2,0)
 
 def equivalent_slot(c,a,o):

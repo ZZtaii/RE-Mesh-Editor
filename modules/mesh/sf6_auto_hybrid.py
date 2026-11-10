@@ -331,6 +331,9 @@ def automatic_collection(collection,source,source_hash,selected_objects=None,app
                 # discard those correctives. Refuse before allocating copies
                 # or touching the output; unshaped parts can safely rebuild.
                 reason='Material changed on source section';native=None
+            if native is not None and expected and not keys:
+                # Deleted keys are missing, not masked; say so in the review.
+                reason='Missing compatible target shape keys';native=None
             if native is not None and expected and (not keys or not keys.use_relative or any(
                     keys.key_blocks[name].relative_key!=keys.key_blocks[0] or keys.key_blocks[name].vertex_group
                     for name in expected if name in actual)):

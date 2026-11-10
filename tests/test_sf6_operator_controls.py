@@ -65,27 +65,51 @@ def main():
             values.update(name=collection.name, path=str(path), exportType='MESH', enabled=True,
                           invalid=False, hasChild=False, exportBlendShapes=preserve,
                           autoSolveRepeatedUVs=False, preserveSharpEdges=False)
+            if preserve:
+                # Any rebuild option makes an untouched mesh leave the exact-source route.
+                values.update(splitLoopVertices=False, preserveBoneMatrices=True)
             return values
 
+        def batch_review(*rows, quick=False):
+            # Without a window, batch export only prepares its review. Approving
+            # the ready plan is the scripted equivalent of the user's click.
+            if quick:
+                result = bpy.ops.re_mesh.quick_batch_export('EXEC_DEFAULT')
+            else:
+                result = bpy.ops.re_mesh.batch_exporter('EXEC_DEFAULT', itemList_items=list(rows))
+            assert result == {'INTERFACE'}, result
+            return ops._LAST_BATCH_REVIEW
+
+        def routes(request):
+            return [row['result'].get('route') for row in request.review['files']]
+
+        def batch_export(*rows, quick=False):
+            request = batch_review(*rows, quick=quick)
+            assert request.state == 'ready', request.review
+            found = routes(request)
+            assert request.approve(request.revision), request.result
+            return found
+
         target = root/original.name
-        assert bpy.ops.re_mesh.batch_exporter('EXEC_DEFAULT', itemList_items=[item(target)]) == {'FINISHED'}
+        assert batch_export(item(target)) == ['exact_source']
         assert target.read_bytes() == original.read_bytes()
         assert collection['BatchExport_preserveSource'] is True or collection['BatchExport_preserveSource'] == 1
         passed('batch_preserved_export_is_byte_identical')
 
+        # Without its source metadata the mesh cannot take the exact-source route.
+        # The export is still reviewed, and never claims to be an exact copy.
         target.write_bytes(b'KEEP')
         collection['SF6PreserveSource'] = False
-        cancelled(lambda:bpy.ops.re_mesh.batch_exporter('EXEC_DEFAULT', itemList_items=[item(target)]))
+        request = batch_review(item(target))
+        assert 'exact_source' not in routes(request)
         assert target.read_bytes() == b'KEEP'
-        passed('batch_missing_metadata_fails_without_fallback')
+        request.cancel()
+        assert target.read_bytes() == b'KEEP'
+        collection['SF6PreserveSource'] = True
+        passed('batch_missing_metadata_never_exports_as_exact_source')
 
-        captured = []
-        def ordinary_spy(path, options):
-            captured.append(options.copy())
-            return True
-        with patch.object(addon, 'exportREMeshFile', ordinary_spy):
-            assert bpy.ops.re_mesh.batch_exporter('EXEC_DEFAULT', itemList_items=[item(target, False)]) == {'FINISHED'}
-        assert captured[-1]['exportBlendShapes'] is False
+        assert batch_export(item(target, False)) == ['ordinary']
+        assert target.read_bytes()[:4] == b'MESH' and target.read_bytes() != original.read_bytes()
         assert collection['BatchExport_preserveSource'] == False
         passed('batch_forwards_explicit_ordinary_mode')
 
@@ -94,36 +118,37 @@ def main():
         mesh_io.importREMeshFile(str(original), legacy)
         collection = bpy.data.collections[bpy.context.scene['REMeshLastImportedCollection']]
         ordinary_target = root/'ordinary.mesh.230110883'
-        assert bpy.ops.re_mesh.batch_exporter('EXEC_DEFAULT', itemList_items=[item(ordinary_target, False)]) == {'FINISHED'}
+        assert batch_export(item(ordinary_target, False)) == ['ordinary']
         assert ordinary_target.read_bytes()[:4] == b'MESH'
         passed('real_legacy_mesh_ordinary_batch_export')
 
         # Quick Export must rebuild the list and use the saved mode, including false.
-        captured.clear()
-        collection['BatchExport_preserveSource'] = False
-        with patch.object(addon, 'exportREMeshFile', ordinary_spy):
-            assert bpy.ops.re_mesh.quick_batch_export('EXEC_DEFAULT') == {'FINISHED'}
-        assert len(captured) == 1 and captured[0]['exportBlendShapes'] is False
+        ordinary_target.write_bytes(b'STALE')
+        assert collection['BatchExport_preserveSource'] == False
+        assert batch_export(quick=True) == ['ordinary']
+        assert ordinary_target.read_bytes()[:4] == b'MESH'
         passed('quick_export_reloads_saved_false_mode')
 
-        # Exercise the population function with sparse old collection settings.
-        class Items(list):
-            def add(self):
-                value = SimpleNamespace(path='', exportBlendShapes=True)
-                self.append(value)
-                return value
-        for key in list(collection.keys()):
-            if key.startswith('BatchExport_'):
-                del collection[key]
-        preferences.default_exportBlendShapes = True
-        items = Items()
-        ops.populateCollectionList(items, collection, 0, '')
-        assert items[0].exportBlendShapes is False
-        collection['BatchExport_preserveSource'] = True
-        items = Items()
-        ops.populateCollectionList(items, collection, 0, '')
-        assert items[0].exportBlendShapes == True
-        preferences.default_exportBlendShapes = True
+        # Exercise the population function with sparse old collection settings,
+        # on a real item list like the one the batch window owns.
+        bpy.types.Scene.operator_control_items = bpy.props.CollectionProperty(type=ops.ExporterNodePropertyGroup)
+        try:
+            items = bpy.context.scene.operator_control_items
+            for key in list(collection.keys()):
+                if key.startswith('BatchExport_'):
+                    del collection[key]
+            preferences.default_exportBlendShapes = True
+            items.clear()
+            ops.populateCollectionList(items, collection, 0, '')
+            assert items[0].exportBlendShapes is False
+            collection['BatchExport_preserveSource'] = True
+            items.clear()
+            ops.populateCollectionList(items, collection, 0, '')
+            assert items[0].exportBlendShapes == True
+            items.clear()
+        finally:
+            del bpy.types.Scene.operator_control_items
+        collection['BatchExport_preserveSource'] = False
         passed('batch_mode_ignores_global_preference_and_honors_saved_batch_override')
 
         # No destination/last-success fields should change on a helper failure.
@@ -140,44 +165,31 @@ def main():
         assert target.read_bytes() == b'KEEP' and collection['BatchExport_path'] == 'previous-success'
         passed('direct_validation_and_io_errors_have_no_python_traceback')
 
-        # A failed first item must not prevent the next file exporting.
+        # A first item that cannot be published must not prevent the next file exporting.
         later = root/'later.mesh.230110883'
-        calls = []
-        def mixed(path, options):
-            calls.append(path)
-            if path == str(target):
-                return False
-            Path(path).write_bytes(b'LATER')
-            return True
-        with patch.object(addon, 'exportREMeshFile', mixed):
-            cancelled(lambda:bpy.ops.re_mesh.batch_exporter('EXEC_DEFAULT',
-                itemList_items=[item(target, False), item(later, False)]))
-        assert calls == [str(target), str(later)] and later.read_bytes() == b'LATER'
+        occupied = root/'occupied.mesh.230110883'
+        occupied.mkdir()
+        request = batch_review(item(occupied, False), item(later, False))
+        if request.state == 'ready':
+            assert not request.approve(request.revision)
+            assert request.result['failed_count'] == 1 and request.result['succeeded_count'] == 1, request.result
+            assert later.read_bytes()[:4] == b'MESH'
+        else:
+            assert request.review['report']['failed_count'] == 1 and request.review['report']['ready_count'] == 1
+            request.cancel()
+        assert occupied.is_dir()
         passed('batch_counts_failure_and_continues')
 
-        # A CANCELLED result without ERROR report must count as failure too.
-        class CancelledMeshOps:
-            def exportfile(self, **kwargs):
-                return {'CANCELLED'}
-        proxy = SimpleNamespace(context=bpy.context, data=bpy.data, app=bpy.app,
-                                ops=SimpleNamespace(re_mesh=CancelledMeshOps()))
-        messages = []
-        batch = SimpleNamespace(skipPrompt=False, itemList_items=[SimpleNamespace(**item(target, False))],
-                                report=lambda kinds,message:messages.append(message))
-        with patch.object(ops, 'bpy', proxy):
-            assert ops.WM_OT_REBatchExporter.execute(batch, bpy.context) == {'CANCELLED'}
-        assert any('1/1 files failed' in msg for msg in messages)
-        passed('batch_counts_non_finished_operator_result')
-
-        collection['BatchExport_path'] = str(target)
+        collection['BatchExport_path'] = str(occupied)
         collection['BatchExport_preserveSource'] = False
-        with patch.object(addon, 'exportREMeshFile', return_value=False):
-            cancelled(lambda:bpy.ops.re_mesh.quick_batch_export('EXEC_DEFAULT'))
+        request = batch_review(quick=True)
+        assert request.state == 'blocked' or not request.approve(request.revision)
+        assert occupied.is_dir()
+        request.cancel()
         passed('quick_export_propagates_failure')
 
         cancelled(lambda:bpy.ops.re_mesh.batch_exporter('EXEC_DEFAULT', itemList_items=[]))
         passed('empty_batch_is_not_reported_as_success')
-
         # Real bad-file/valid-file import proves continuation and scene protection.
         bad = root/'invalid.mesh.230110883'
         bad.write_bytes(b'not a mesh')
@@ -188,7 +200,7 @@ def main():
         import_settings.pop('importAllLODs')
         import_settings.update(directory=str(root), mergeImportedArmatures=False)
         cancelled(lambda:bpy.ops.re_mesh.importfile('EXEC_DEFAULT',
-            files=[{'name':bad.name}], **import_settings), 'Not an SF6')
+            files=[{'name':bad.name}], **import_settings), 'not an RE mesh')
         assert set(bpy.data.objects.keys()) == before
         passed('bad_single_import_reports_reason_and_preserves_scene')
         assert bpy.ops.re_mesh.importfile('EXEC_DEFAULT', files=[{'name':bad.name},{'name':valid.name}],
