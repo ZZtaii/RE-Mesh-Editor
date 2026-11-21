@@ -313,6 +313,8 @@ def nodes_center(ntree):
 			node.location.x -= center_x
 			node.location.y += -center_y
 
+arrangedGroupSizes = {}#Node group (its id for this Blender session) -> node count when it was last arranged
+
 def arrangeNodeTree(ntree,margin_x = 100,margin_y = 20,centerNodes = True):
 
 #TODO Fix, blender doesn't initialize node dimensions unless the shader editor is open	
@@ -329,8 +331,16 @@ def arrangeNodeTree(ntree,margin_x = 100,margin_y = 20,centerNodes = True):
 
 	while n_groups:
 		j = n_groups.pop(0)
-		nodes_iterate(j.node_tree)
-		for i in j.node_tree.nodes:
+		groupTree = j.node_tree
+		if groupTree == None:
+			continue
+		#A node group is shared by every material that uses it: arrange it once, not once per use
+		groupKey = getattr(groupTree,"session_uid",groupTree.name)
+		if arrangedGroupSizes.get(groupKey) == len(groupTree.nodes):
+			continue
+		nodes_iterate(groupTree)
+		arrangedGroupSizes[groupKey] = len(groupTree.nodes)
+		for i in groupTree.nodes:
 			if i.type == 'GROUP':
 				n_groups.append(i)
 

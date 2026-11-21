@@ -169,6 +169,16 @@ def update_materialName(self, context):
 	except:
 		pass
 
+def showFlagsInPreview(flagGroup):
+	#A flag changed in the MDF panel, by its tick box or by the flag number: show it in the preview material
+	try:
+		materialObj = flagGroup.id_data
+		if materialObj.re_mdf_material.linkedMaterial == None:
+			linkBlenderMaterial(materialObj, materialObj.re_mdf_material.materialName)
+		syncSF6FlagPreview(materialObj)
+	except Exception:
+		pass
+
 def update_FlagsFromInt(self, context):
 	if not self.internal_changingFlagValues: 
 		try:
@@ -184,6 +194,7 @@ def update_FlagsFromInt(self, context):
 			self.internal_changingFlagValues = False
 		except:
 			self.internal_changingFlagValues = False
+		showFlagsInPreview(self)
 def update_IntFromFlags(self, context):
 	if not self.internal_changingFlagValues:
 		try:
@@ -206,13 +217,7 @@ def update_IntFromFlags(self, context):
 			self.internal_changingFlagValues = False
 		except:
 			self.internal_changingFlagValues = False
-		try:#Show the flag change in the preview material
-			materialObj = self.id_data
-			if materialObj.re_mdf_material.linkedMaterial == None:
-				linkBlenderMaterial(materialObj, materialObj.re_mdf_material.materialName)
-			syncSF6FlagPreview(materialObj)
-		except Exception:
-			pass
+		showFlagsInPreview(self)
 class MDFToolPanelPropertyGroup(bpy.types.PropertyGroup):
 	
 	def getMaterialPresets(self,context):

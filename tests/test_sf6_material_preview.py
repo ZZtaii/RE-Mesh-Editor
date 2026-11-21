@@ -1,9 +1,9 @@
-"""SF6 material preview: opacity follows the alpha test flag, and MDF panel edits reach the preview.
+﻿"""SF6 material preview: opacity follows the alpha test flag, and MDF panel edits reach the preview.
 
 Run inside Blender with the addon installed or on the user scripts path:
 blender -b --factory-startup --python tests/test_sf6_material_preview.py -- --source-dir <folder that holds esf\\esfNNN\\...>
 
-Needs the retail files esf030_004_01 (sheer cloth), esf006_003_00 (glasses) and esf006_004_01 (lights).
+Needs the retail files esf030_004_01 (sheer cloth), esf006_003_00 (blended glasses), esf006_004_01 (lights) and esf014_003_00 (dithered glasses).
 """
 import argparse
 import os
@@ -17,6 +17,13 @@ ADDON = "RE-Mesh-Editor-main"
 
 def bsdf_of(material):
     return next(node for node in material.node_tree.nodes if node.type == "BSDF_PRINCIPLED")
+
+
+def opacity_group(material):
+    """Name of the node group that feeds the shader's Alpha (the last one in a chain)."""
+    links = bsdf_of(material).inputs["Alpha"].links
+    node = links[0].from_node if links else None
+    return node.node_tree.name if node is not None and node.type == "GROUP" else None
 
 
 def mdf_object(material_name):
@@ -66,6 +73,14 @@ def main():
     assert flag_node.outputs[0].default_value == 0.0, "flag change did not reach the preview"
     sheer_obj.re_mdf_material.flags.BaseAlphaTestEnable = True
     assert flag_node.outputs[0].default_value == 1.0
+    # The same flag changed through the flag number reaches the preview too
+    flag_number = sheer_obj.re_mdf_material.flags.flagIntValue
+    sheer_obj.re_mdf_material.flags.flagIntValue = flag_number & ~2
+    assert not sheer_obj.re_mdf_material.flags.BaseAlphaTestEnable
+    assert flag_node.outputs[0].default_value == 0.0, "flag number change did not reach the preview"
+    sheer_obj.re_mdf_material.flags.flagIntValue = flag_number
+    assert flag_node.outputs[0].default_value == 1.0
+    assert opacity_group(sheer) == "SF6 Sheer Opacity v1", opacity_group(sheer)
     edge = mdf_prop(sheer_obj, "SeeThrough_EdgeAlpha")
     edge.float_value = 0.25
     assert abs(sheer.node_tree.nodes["SeeThrough_EdgeAlpha"].outputs[0].default_value - 0.25) < 1e-6
@@ -91,19 +106,22 @@ def main():
     belt = bpy.data.materials["esf_ClothA_Belt"]
     assert belt.node_tree.nodes["MDF_BaseAlphaTestEnable"].outputs[0].default_value == 0.0
     assert belt.surface_render_method == "DITHERED"
+    assert opacity_group(belt) == "SF6 Cloth Opacity v1", opacity_group(belt)
+    # Every material shares one copy of each formula
+    assert len([group for group in bpy.data.node_groups if group.name.startswith("SF6 Cloth Opacity")]) == 1
 
     # Glasses: blended, and the glass values are editable
     import_mesh(args.source_dir, "esf006", "003", "00")
     lens = bpy.data.materials["esf_Cloth_lens"]
     assert lens.surface_render_method == "BLENDED", lens.surface_render_method
-    assert bsdf_of(lens).inputs["Alpha"].is_linked
+    assert opacity_group(lens) == "SF6 Blended Glass v1", opacity_group(lens)
     lens_obj = mdf_object("esf_Cloth_lens")
     glass = mdf_prop(lens_obj, "Glass_Alpha")
     glass.float_value = 0.9
     assert abs(lens.node_tree.nodes["Glass_Alpha"].outputs[0].default_value - 0.9) < 1e-6
     # Hair: dithered opacity with its own values
     hair = bpy.data.materials["esf_Hair00"]
-    assert bsdf_of(hair).inputs["Alpha"].is_linked
+    assert opacity_group(hair) == "SF6 Hair Opacity v1", opacity_group(hair)
     assert "DissolveRange" in hair.node_tree.nodes and "EdgeAlphaMask_Rate" in hair.node_tree.nodes
     hair_range = mdf_prop(mdf_object("esf_Hair00"), "DissolveRange")
     hair_range.float_value = 0.6
@@ -121,6 +139,15 @@ def main():
     assert abs(light.node_tree.nodes["Emissive_Intensity"].outputs[0].default_value - 3.0) < 1e-6
     # A material of the same costume without a glow mask stays dark
     assert not bsdf_of(bpy.data.materials["esf_armor"]).inputs["Emission Strength"].is_linked
+
+    # Glass that is not blended has its own rule and stays dithered
+    import_mesh(args.source_dir, "esf014", "003", "00")
+    glasses = bpy.data.materials["esf_Misc_Glasses02"]
+    assert glasses.surface_render_method == "DITHERED", glasses.surface_render_method
+    assert opacity_group(glasses) == "SF6 Dithered Glass v1", opacity_group(glasses)
+    offset = mdf_prop(mdf_object("esf_Misc_Glasses02"), "Glass_EdgeOffset")
+    offset.float_value = 0.2
+    assert abs(glasses.node_tree.nodes["Glass_EdgeOffset"].outputs[0].default_value - 0.2) < 1e-6
 
     print("SF6_MATERIAL_PREVIEW_OK")
 
