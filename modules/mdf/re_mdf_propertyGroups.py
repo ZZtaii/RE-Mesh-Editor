@@ -14,6 +14,7 @@ from bpy.props import (StringProperty,
 
 from .file_re_mdf import gameNameMDFVersionDict
 from .blender_re_mesh_mdf import importMDF
+from .sf6_material_preview import syncSF6FlagPreview,SF6_LIVE_PROPS
 from .re_mdf_presets import reloadPresets
 
 
@@ -36,10 +37,12 @@ try:
 	propFileList = [
 		
 		"blender_re_mesh_mdf.py",
-		"blender_nodes_re_mdf.py",])
+		"blender_nodes_re_mdf.py",
+		"sf6_material_preview.py",])
 except Exception as err:
 	print(f"Unable to load usable properties - {str(err)}")
 	editablePropsSet = set()
+editablePropsSet |= SF6_LIVE_PROPS
 #print(editablePropsSet)
 
 def filterMDFCollection(self, collection):
@@ -199,10 +202,17 @@ def update_IntFromFlags(self, context):
 						
 			self.internal_changingFlagValues = True
 			self.flagIntValue = flags.asInt32
-			self.flagIntValueB = flagsB.asInt32 
+			self.flagIntValueB = flagsB.asInt32
 			self.internal_changingFlagValues = False
 		except:
 			self.internal_changingFlagValues = False
+		try:#Show the flag change in the preview material
+			materialObj = self.id_data
+			if materialObj.re_mdf_material.linkedMaterial == None:
+				linkBlenderMaterial(materialObj, materialObj.re_mdf_material.materialName)
+			syncSF6FlagPreview(materialObj)
+		except Exception:
+			pass
 class MDFToolPanelPropertyGroup(bpy.types.PropertyGroup):
 	
 	def getMaterialPresets(self,context):

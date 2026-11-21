@@ -26,7 +26,8 @@ try:
 	usedTextureSet = getUsedTextureNodes(
 	propFileList = [
 		"blender_re_mesh_mdf.py",
-		"blender_nodes_re_mdf.py",])
+		"blender_nodes_re_mdf.py",
+		"sf6_material_preview.py",])
 except Exception as err:
 	print(f"Unable to load usable properties - {str(err)}")
 	usedTextureSet = set()
@@ -232,6 +233,7 @@ from .file_re_mdf import readMDF,getMDFVersionToGameName
 from ..tex.blender_re_tex import loadTex
 from .blender_nodes_re_mdf import addImageNode,addTextureNode,addPropertyNode,dynamicColorMixLayerNodeGroup,getBentNormalNodeGroup,getDualUVMappingNodeGroup,getMHWildsSkinMappingNodeGroup,getMHWildsDetailMapNodeGroup
 from ..ddsconv.directx.texconv import Texconv, unload_texconv
+from .sf6_material_preview import setupSF6Opacity,setupSF6Emission,applySF6CustomizeAdd
 DEBUG_MODE = False
 def debugprint(string):
 	if DEBUG_MODE:
@@ -628,7 +630,7 @@ def importMDF(mdfFile,meshMaterialDict,loadUnusedTextures,loadUnusedProps,useBac
 			UVMap2Node.location = (-800,600)
 			UVMap2Node.uv_map = "UVMap1"
 			
-			blenderMaterial.use_backface_culling = useBackfaceCulling and not (matInfo["flags"].BaseTwoSideEnable == 1 or matInfo["flags"].TwoSideEnable == 1)
+			blenderMaterial.use_backface_culling = useBackfaceCulling and not (matInfo["flags"].BaseTwoSideEnable != 0 or matInfo["flags"].TwoSideEnable != 0)#One bit signed fields read as -1 when set
 			
 			arrayImageNodeList = []
 			
@@ -1498,6 +1500,7 @@ def importMDF(mdfFile,meshMaterialDict,loadUnusedTextures,loadUnusedProps,useBac
 					clampNode.location = (matInfo["roughnessNodeLayerGroup"].currentOutSocket.node.location[0]+300,matInfo["roughnessNodeLayerGroup"].currentOutSocket.node.location[1])
 					links.new(matInfo["roughnessNodeLayerGroup"].currentOutSocket,clampNode.inputs["Value"])
 					links.new(clampNode.outputs["Result"],nodeBSDF.inputs["Roughness"])
+					applySF6CustomizeAdd(nodeTree,clampNode.inputs["Value"],matInfo.get("sf6RoughnessAdd"))
 				
 				if matInfo["metallicNodeLayerGroup"].currentOutSocket != None:
 					clampNode = nodes.new("ShaderNodeClamp")
@@ -1545,9 +1548,13 @@ def importMDF(mdfFile,meshMaterialDict,loadUnusedTextures,loadUnusedProps,useBac
 							links.new(multNode.outputs["Value"],clampNode.inputs["Value"])
 						else:
 							links.new(matInfo["metallicNodeLayerGroup"].currentOutSocket,clampNode.inputs["Value"])
-				
+					applySF6CustomizeAdd(nodeTree,clampNode.inputs["Value"],matInfo.get("sf6MetalAdd"))
+
+				if matInfo["gameName"] == "SF6":
+					setupSF6Emission(matInfo,nodeTree)
+
 				if matInfo["emissionColorNodeLayerGroup"].currentOutSocket != None:
-					
+
 					if bpy.app.version < (4,0,0):
 						links.new(matInfo["emissionColorNodeLayerGroup"].currentOutSocket,nodeBSDF.inputs["Emission"])
 				
@@ -1565,8 +1572,10 @@ def importMDF(mdfFile,meshMaterialDict,loadUnusedTextures,loadUnusedProps,useBac
 					
 				
 				alphaClippingNode = None
+				#SF6: opacity follows the alpha test flag and the shader family
+				sf6OpacityDone = matInfo["gameName"] == "SF6" and setupSF6Opacity(matInfo,nodeBSDF,nodeTree)
 				#if hasAlpha:
-				if matInfo["alphaSocket"] != None:
+				if not sf6OpacityDone and matInfo["alphaSocket"] != None:
 					
 					
 					clippingThresholdOutSocket = None

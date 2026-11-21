@@ -1201,6 +1201,7 @@ def newCMASKNode (nodeTree,textureType,matInfo):
 	
 	
 	
+
 	CMaskSeparateNode = nodeTree.nodes.new('ShaderNodeSeparateColor')
 	CMaskSeparateNode.location = currentPos
 	
@@ -1214,6 +1215,10 @@ def newCMASKNode (nodeTree,textureType,matInfo):
 		elif "CustomizeColor"  in prop.propName:
 			if prop.propValue == [0.501960813999176, 0.501960813999176, 0.501960813999176, 1.0]:
 				prop.propValue = [1.0,1.0,1.0,1.0]
+	if matInfo["gameName"] == "SF6":
+		#SF6 tints by twice the colour and adds roughness and metal (read from the game's shader)
+		from .sf6_material_preview import setupSF6ColorMask
+		return setupSF6ColorMask(nodeTree,matInfo,imageNode,CMaskSeparateNode)
 	if "CustomizeColor_0" in matInfo["mPropDict"]:
 		if "CustomizeColor_0" not in nodeTree.nodes:
 			color0Node = addPropertyNode(matInfo["mPropDict"]["CustomizeColor_0"], matInfo["currentPropPos"], nodeTree)
@@ -1386,7 +1391,8 @@ def newATOSNode (nodeTree,textureType,matInfo):
 			if textureType == "AlphaTranslucentOcclusionCavityMap":
 				matInfo["cavityNodeLayerGroup"].addMixLayer(imageNode.outputs["Alpha"])
 	else:
-		if not isMTOS and not isMaskAlpha and not "StitchMap" in matInfo["textureNodeDict"]:
+		#SF6 decides by the alpha test flag instead (sf6_material_preview), so stitched cloth keeps its real cutout
+		if not isMTOS and not isMaskAlpha and (matInfo["gameName"] == "SF6" or not "StitchMap" in matInfo["textureNodeDict"]):
 			matInfo["alphaSocket"] = separateNode.outputs["Red"]
 		matInfo["translucentSocket"] = separateNode.outputs["Green"]
 		if matInfo["gameName"] != "SF6" and not useLegacyHairUV2Occlusion:#SF6 uses occlusion channel for something else
